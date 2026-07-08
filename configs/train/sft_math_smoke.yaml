@@ -1,0 +1,52 @@
+# SFT smoke run: small but nontrivial (2k OpenR1-Math examples, short run).
+# Verifies checkpoint + eval compatibility end to end; not a benchmark run.
+# The resulting checkpoints/last is the intended policy init for math_rl_smoke.
+run:
+  name: sft_math_smoke
+  seed: 42
+  output_root: runs
+
+dataset:
+  name: openr1_math
+  split: train
+  limit: 2000
+
+prompt:
+  template_id: math_cot_boxed_v1
+
+model:
+  name_or_path: Qwen/Qwen3-0.6B-Base
+  dtype: bf16
+  device: cuda
+
+training:
+  max_steps: 250
+  batch_size: 2
+  gradient_accumulation_steps: 8
+  learning_rate: 1.0e-5
+  weight_decay: 0.0
+  max_grad_norm: 1.0
+  lr_scheduler: linear_warmup
+  warmup_steps: 20
+  # OpenR1 reference solutions are long R1 traces; 1024 truncates most of them
+  # but halves memory, which is the right trade for a smoke run on one 24GB GPU.
+  max_seq_length: 1024
+  gradient_checkpointing: true
+  log_every: 10
+  save_every: 125
+  eval_every: 125
+
+eval:
+  dataset:
+    name: gsm8k
+    split: test
+    limit: 20
+  prompt:
+    template_id: math_cot_boxed_v1
+  verifier:
+    name: math_answer
+  generation:
+    max_new_tokens: 512
+    do_sample: false
+    temperature: 0.0
+    top_p: 1.0

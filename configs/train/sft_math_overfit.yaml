@@ -1,0 +1,49 @@
+# SFT overfit debug run: 32 examples, many steps. The point is not a useful
+# model -- it is to verify label masking, loss plumbing, and checkpointing.
+# If train_loss does not clearly decrease here, do NOT trust a full SFT run.
+run:
+  name: sft_math_overfit
+  seed: 42
+  output_root: runs
+
+dataset:
+  name: openr1_math
+  split: train
+  limit: 32
+
+prompt:
+  template_id: math_cot_boxed_v1
+
+model:
+  name_or_path: Qwen/Qwen3-0.6B-Base
+  dtype: bf16
+  device: cuda
+
+training:
+  max_steps: 100
+  batch_size: 1
+  gradient_accumulation_steps: 8
+  learning_rate: 1.0e-5
+  weight_decay: 0.0
+  max_grad_norm: 1.0
+  lr_scheduler: constant
+  max_seq_length: 1024
+  gradient_checkpointing: true
+  log_every: 5
+  save_every: 50
+  eval_every: 50
+
+eval:
+  dataset:
+    name: openr1_math
+    split: train
+    limit: 8
+  prompt:
+    template_id: math_cot_boxed_v1
+  verifier:
+    name: math_answer
+  generation:
+    max_new_tokens: 512
+    do_sample: false
+    temperature: 0.0
+    top_p: 1.0

@@ -1,0 +1,76 @@
+# Math-RL v0 smoke run: REINFORCE with per-prompt group baseline, initialized
+# from an SFT checkpoint. Verifies rollout -> verifier reward -> advantage ->
+# update -> artifacts; accuracy improvement is NOT a goal of this run.
+#
+# Set model.policy_name_or_path to a real SFT checkpoint first, e.g. the
+# checkpoints/last directory written by:
+#   python scripts/train_sft.py --config configs/train/sft_math_smoke.yaml
+run:
+  name: math_rl_smoke
+  seed: 42
+  output_root: runs
+
+# GSM8K prompts, not OpenR1: competition-level OpenR1 problems are all-wrong
+# for a lightly-SFT'd 0.6B model, so every group has zero reward variance and
+# the REINFORCE update carries no signal. GSM8K is easy enough that some
+# groups disagree, which is what this smoke run needs to demonstrate.
+dataset:
+  name: gsm8k
+  split: train
+  limit: 256
+
+prompt:
+  template_id: math_cot_boxed_v1
+
+model:
+  policy_name_or_path: runs/CHANGE_ME_sft_math_smoke/checkpoints/last
+  # reference defaults to the policy path when kl_beta > 0
+  dtype: bf16
+  device: cuda
+
+rl:
+  algorithm: reinforce_group_baseline
+  group_size: 4
+  prompts_per_step: 4
+  max_steps: 50
+  learning_rate: 1.0e-6
+  weight_decay: 0.0
+  max_grad_norm: 1.0
+  kl_beta: 0.01
+  max_seq_length: 1024
+  # 16 rollout sequences per step; run the update forward 4 at a time so the
+  # full-vocab logits stay ~1 GiB per chunk instead of ~4 GiB twice (ref+policy).
+  update_micro_batch_size: 4
+  gradient_checkpointing: true
+  log_every: 1
+  save_every: 25
+  eval_every: 25
+
+advantage:
+  type: group_mean
+  normalize: false
+  epsilon: 1.0e-6
+
+generation:
+  do_sample: true
+  temperature: 0.7
+  top_p: 0.95
+  max_new_tokens: 512
+
+verifier:
+  name: math_answer
+
+eval:
+  dataset:
+    name: gsm8k
+    split: test
+    limit: 20
+  prompt:
+    template_id: math_cot_boxed_v1
+  verifier:
+    name: math_answer
+  generation:
+    max_new_tokens: 512
+    do_sample: false
+    temperature: 0.0
+    top_p: 1.0
