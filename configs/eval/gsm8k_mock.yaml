@@ -1,0 +1,34 @@
+# Mock-backend artifact debugging: exercises the full pipeline (dataset ->
+# prompts -> completions -> verifier -> run artifacts) without loading a model.
+# The mock backend echoes each example's reference solution as the completion,
+# so math_answer should judge nearly every row "correct".
+run:
+  name: gsm8k_mock
+  seed: 42
+  output_root: runs
+
+dataset:
+  name: gsm8k
+  split: test
+  limit: 20
+
+prompt:
+  template_id: math_cot_boxed_v1
+
+model:
+  backend: mock
+  mock_mode: reference
+
+generation:
+  max_new_tokens: 512
+  do_sample: false
+  temperature: 0.0
+  top_p: 1.0
+
+verifier:
+  name: math_answer
+
+runtime:
+  distributed: false
+  device: cpu
+  log_every: 5

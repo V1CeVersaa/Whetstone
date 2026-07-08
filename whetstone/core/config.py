@@ -83,6 +83,10 @@ class GenerationConfig(BaseModel):
     Attributes:
         backend: ``"mock"`` routes to the no-model path; otherwise unused here and
             stripped before the block is forwarded to ``model.generate``.
+        batch_size: Prompts per ``model.generate`` call; ``None`` runs the
+            whole prompt list at once. Bounds KV-cache memory -- set this for
+            evals over more than a few dozen prompts. Stripped before the
+            block is forwarded to ``model.generate``.
         max_new_tokens: Max tokens to generate per prompt.
         do_sample: Sample (``True``) vs greedy decoding (``False``).
         temperature: Sampling temperature (``>= 0``).
@@ -92,6 +96,7 @@ class GenerationConfig(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     backend: str | None = None
+    batch_size: int | None = Field(default=None, ge=1)
     max_new_tokens: int = 512
     do_sample: bool = False
     temperature: float = Field(default=0.0, ge=0.0)

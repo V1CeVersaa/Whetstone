@@ -1,0 +1,9 @@
+# Runtime fragment: 2-process torchrun launch. The flags are informational --
+# distributed state is auto-detected from torchrun's RANK/WORLD_SIZE env vars.
+#   torchrun --standalone --nproc_per_node=2 scripts/run_eval.py \
+#     --config configs/eval/openr1_math_smoke.yaml configs/runtime/torchrun_2gpu.yaml
+runtime:
+  distributed: true
+  device: cuda
+  nproc_per_node: 2
+  log_every: 5

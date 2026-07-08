@@ -1,0 +1,38 @@
+# TACO-Cobalt code smoke test: generated programs are executed against public
+# test cases in the subprocess sandbox. Generated code is untrusted; keep the
+# timeout and output limits in place (see docs/security_code_execution.md).
+run:
+  name: taco_cobalt_smoke_qwen3_06b
+  seed: 42
+  output_root: runs
+
+dataset:
+  name: taco_cobalt
+  split: validation
+  limit: 5
+
+prompt:
+  template_id: code_python_solution_v1
+
+model:
+  name_or_path: Qwen/Qwen3-0.6B-Base
+  dtype: bf16
+  device: cuda
+
+generation:
+  max_new_tokens: 1024
+  do_sample: false
+  temperature: 0.0
+  top_p: 1.0
+  num_return_sequences: 1
+
+verifier:
+  name: code_exec
+  tests: public
+  timeout_seconds: 3
+  max_output_bytes: 20000
+  sandbox_backend: subprocess
+
+runtime:
+  distributed: false
+  log_every: 1

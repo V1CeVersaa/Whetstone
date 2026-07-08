@@ -5,6 +5,9 @@ from datasets import load_dataset
 
 from whetstone.core.registry import Registry
 from whetstone.core.types import WhetstoneExample
+from whetstone.utils.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 class DatasetAdapter(Protocol):
@@ -54,6 +57,10 @@ def load_hf_rows(
         load_split = f"{split}[:{limit}]"
         take_limit = None
 
+    # Hub loads can involve slow downloads; say what is being fetched and how.
+    logger.info(
+        f"Loading dataset {dataset_name} split={split} limit={limit} streaming={streaming}"
+    )
     dataset = load_dataset(
         dataset_name,
         name=name,

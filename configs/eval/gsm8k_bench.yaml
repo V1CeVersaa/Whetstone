@@ -1,0 +1,47 @@
+# GSM8K test-set benchmark for comparing checkpoints (base vs SFT vs RL).
+# GSM8K *test* is held out from both training stages (SFT used OpenR1 train,
+# RL prompts used GSM8K train), so it is contamination-free for all three.
+#
+# Usage -- identical config, only the model changes:
+#   uv run scripts/run_eval.py --config configs/eval/gsm8k_bench.yaml
+#   uv run scripts/run_eval.py --config configs/eval/gsm8k_bench.yaml \
+#     --model runs/<run>/checkpoints/last --run-name gsm8k_bench_rl
+#   uv run scripts/run_eval.py --config configs/eval/gsm8k_bench.yaml \
+#     --set dataset.limit=null --run-name gsm8k_bench_full
+#
+# limit: 200 gives a quick comparison (differences under ~6pp are noise at
+# this sample size); set limit: null for the full 1319-example test set when
+# the comparison needs to be tight.
+
+run:
+  name: gsm8k_bench
+  seed: 42
+  output_root: runs
+
+dataset:
+  name: gsm8k
+  split: test
+  limit: 200
+
+prompt:
+  template_id: math_cot_boxed_v1
+
+model:
+  name_or_path: Qwen/Qwen3-0.6B-Base
+  dtype: bf16
+  device: cuda
+
+generation:
+  batch_size: 32
+  max_new_tokens: 1024
+  do_sample: false
+  temperature: 0.0
+  top_p: 1.0
+  num_return_sequences: 1
+
+verifier:
+  name: math_answer
+
+runtime:
+  distributed: false
+  log_every: 20

@@ -1,0 +1,10 @@
+# Model fragment: layer after an eval config to (re)pin the Foundation model.
+#   python scripts/run_eval.py --config configs/eval/gsm8k_smoke.yaml \
+#     configs/model/qwen3_06b_base.yaml
+# Qwen3-0.6B-Base needs transformers >= 4.51.0 (older versions raise
+# KeyError: 'qwen3').
+model:
+  name_or_path: Qwen/Qwen3-0.6B-Base
+  dtype: bf16
+  device: cuda
+  trust_remote_code: false

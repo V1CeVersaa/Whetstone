@@ -1,0 +1,53 @@
+# GSM8K benchmark, 4-shot variant for base (non-instruct) models.
+# Identical to gsm8k_benchmark.yaml except:
+#   - math_cot_boxed_fewshot_v1: four hand-written exemplars demonstrate the
+#     \boxed{} final-answer pattern (base models follow demonstrations far
+#     better than instructions, so no_answer_rate should collapse);
+#   - stop_strings halts generation before the model hallucinates further
+#     "Question:" blocks, whose extra \boxed{} answers would fool the
+#     verifier's take-last extraction.
+#
+# For a clean base-vs-SFT-vs-RL comparison keep all models on ONE template
+# (the zero-shot gsm8k_benchmark.yaml); use this config as a separate ablation
+# line, and never mix template_ids within a comparison.
+#
+# Usage -- identical config, only the model changes:
+#   uv run scripts/run_eval.py --config configs/eval/gsm8k_bench_fewshot.yaml
+#   uv run scripts/run_eval.py --config configs/eval/gsm8k_bench_fewshot.yaml \
+#     --model runs/<run>/checkpoints/last --run-name gsm8k_bench_fewshot_rl
+#   uv run scripts/run_eval.py --config configs/eval/gsm8k_bench_fewshot.yaml \
+#     --set dataset.limit=null --run-name gsm8k_bench_fewshot_full
+
+run:
+  name: gsm8k_bench_fewshot
+  seed: 42
+  output_root: runs
+
+dataset:
+  name: gsm8k
+  split: test
+  limit: 200
+
+prompt:
+  template_id: math_cot_boxed_fewshot_v1
+
+model:
+  name_or_path: Qwen/Qwen3-0.6B-Base
+  dtype: bf16
+  device: cuda
+
+generation:
+  batch_size: 32
+  max_new_tokens: 1024
+  do_sample: false
+  temperature: 0.0
+  top_p: 1.0
+  num_return_sequences: 1
+  stop_strings: ["\nQuestion:"]
+
+verifier:
+  name: math_answer
+
+runtime:
+  distributed: false
+  log_every: 20

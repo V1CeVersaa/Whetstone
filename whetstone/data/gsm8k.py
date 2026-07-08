@@ -19,7 +19,9 @@ class GSM8KAdapter:
         self,
         *,
         rows: Sequence[dict[str, Any]] | None = None,
-        dataset_name: str = "gsm8k",
+        # The Hub retired bare canonical ids; "gsm8k" alone is rejected by
+        # datasets >= 5.x, so the namespaced repo id is required.
+        dataset_name: str = "openai/gsm8k",
         config_name: str = "main",
         streaming: bool = False,
     ) -> None:

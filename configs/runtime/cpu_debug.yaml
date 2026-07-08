@@ -1,0 +1,9 @@
+# Runtime fragment: force CPU for local debugging. runtime.device overrides
+# model.device, and fp32 avoids slow/unsupported bf16 paths on CPU.
+model:
+  dtype: fp32
+
+runtime:
+  distributed: false
+  device: cpu
+  log_every: 1

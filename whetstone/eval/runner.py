@@ -2,7 +2,7 @@ import json
 import platform
 import socket
 import sys
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from importlib import metadata
 from pathlib import Path
 from time import perf_counter
@@ -12,7 +12,8 @@ from whetstone.core.config import (
     EvalConfig,
     GenerationConfig,
     ModelConfig,
-    load_eval_config,
+    deep_merge,
+    merge_config_files,
     save_yaml,
 )
 from whetstone.core.paths import ensure_dir, resolve_project_path
@@ -43,7 +44,11 @@ from whetstone.verify import VERIFIER_REGISTRY, build_verifier
 logger = get_logger(__name__)
 
 
-def run_evaluation(config_path: str | Path | Sequence[str | Path]) -> Path:
+def run_evaluation(
+    config_path: str | Path | Sequence[str | Path],
+    *,
+    overrides: Mapping[str, Any] | None = None,
+) -> Path:
     """Run one end-to-end evaluation and return its run directory.
 
     Loads and merges the config(s), sets the seed, initializes distributed state,
@@ -54,6 +59,10 @@ def run_evaluation(config_path: str | Path | Sequence[str | Path]) -> Path:
     Args:
         config_path: A single config path, or a sequence of paths that are
             deep-merged in order (later ones override earlier ones).
+        overrides: Optional nested dict merged on top of the config files
+            (used for CLI flags like ``--model``); it goes through the same
+            deep-merge as the files, so the saved ``run_config.yaml`` reflects
+            exactly what ran.
 
     Returns:
         Path to the created run directory.
@@ -63,7 +72,10 @@ def run_evaluation(config_path: str | Path | Sequence[str | Path]) -> Path:
         if isinstance(config_path, (str, Path))
         else [Path(path) for path in config_path]
     )
-    config: EvalConfig = load_eval_config(config_paths)
+    data = merge_config_files(config_paths)
+    if overrides:
+        data = deep_merge(data, overrides)
+    config = EvalConfig.model_validate(data)
     validate_config_references(config)
     config_path = Path(config_paths[0])  # The first config names the run
 
@@ -167,6 +179,7 @@ def run_evaluation(config_path: str | Path | Sequence[str | Path]) -> Path:
             )
         barrier(state)
     except Exception as exc:
+        logger.error(f"Run failed at stage {stage!r}: {type(exc).__name__}: {exc}")
         if state.is_main:
             write_status(
                 run_dir,

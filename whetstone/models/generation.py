@@ -20,26 +20,57 @@ def generate_completions(
 ) -> list[ModelCompletion]:
     """Generate one completion per prompt and return structured results.
 
-    Prompts are batched with left padding, so generated tokens for every
-    sequence begin at the same padded prompt width. Token counts exclude padding
-    and ``finish_reason`` reflects whether an EOS token was produced.
+    Prompts are processed in chunks of ``generation_config["batch_size"]``
+    (all at once when unset). Chunking bounds the KV cache: hundreds of
+    sequences in a single ``generate`` call cost tens of GiB of cache and OOM,
+    while per-chunk left padding also wastes less on length variance. Within a
+    chunk, generated tokens for every sequence begin at the same padded prompt
+    width; token counts exclude padding and ``finish_reason`` reflects whether
+    an EOS token was produced.
 
     Args:
         model: A loaded causal LM.
         tokenizer: Its tokenizer, configured for left-padded generation.
         prompts: Rendered prompts to complete.
-        generation_config: Decoding kwargs passed to ``model.generate`` (a
-            ``backend`` key, if present, is ignored).
+        generation_config: Decoding kwargs passed to ``model.generate``
+            (``backend`` and ``batch_size`` keys are consumed here, not
+            forwarded).
         model_name_or_path: Recorded in each completion's metadata.
         device: Device to move inputs to; ``None``/``"auto"`` leaves them as-is.
 
     Returns:
         One :class:`ModelCompletion` per prompt, in order.
     """
+    batch_size = int(generation_config.get("batch_size") or len(prompts)) or 1
     logger.info(
-        f"Generating {len(prompts)} completions (max_new_tokens={generation_config.get('max_new_tokens')})"
+        f"Generating {len(prompts)} completions "
+        f"(max_new_tokens={generation_config.get('max_new_tokens')}, batch_size={batch_size})"
     )
+    completions: list[ModelCompletion] = []
+    for start in range(0, len(prompts), batch_size):
+        completions.extend(
+            _generate_batch(
+                model=model,
+                tokenizer=tokenizer,
+                prompts=prompts[start : start + batch_size],
+                generation_config=generation_config,
+                model_name_or_path=model_name_or_path,
+                device=device,
+            )
+        )
+    return completions
 
+
+def _generate_batch(
+    *,
+    model: Any,
+    tokenizer: Any,
+    prompts: list[RenderedPrompt],
+    generation_config: Mapping[str, Any],
+    model_name_or_path: str,
+    device: str | None,
+) -> list[ModelCompletion]:
+    """Run one left-padded ``model.generate`` call over a chunk of prompts."""
     prompt_texts = [prompt.text for prompt in prompts]
     encoded = tokenizer(prompt_texts, padding=True, return_tensors="pt")
     if device is not None and device != "auto":
@@ -48,6 +79,11 @@ def generate_completions(
     prompt_lengths = encoded["attention_mask"].sum(dim=1).tolist()
 
     gen_kwargs = model_generate_kwargs(generation_config)
+    # HF `generate` needs the tokenizer to honor stop_strings; used by few-shot
+    # templates to stop the model from hallucinating further Q/A pairs (whose
+    # extra boxed answers would fool the take-last answer extraction).
+    if "stop_strings" in gen_kwargs:
+        gen_kwargs.setdefault("tokenizer", tokenizer)
     with torch.no_grad():
         generated = model.generate(**encoded, **gen_kwargs)
     if len(generated) != len(prompts):
@@ -96,9 +132,14 @@ def generate_completions(
 
 
 def model_generate_kwargs(generation_config: Mapping[str, Any]) -> dict[str, Any]:
-    """Return kwargs for ``model.generate`` while preserving artifact config elsewhere."""
+    """Return kwargs for ``model.generate`` while preserving artifact config elsewhere.
+
+    ``backend`` and ``batch_size`` are Whetstone-level settings consumed before
+    generation; ``model.generate`` would reject them as unknown kwargs.
+    """
     kwargs = dict(generation_config)
     kwargs.pop("backend", None)
+    kwargs.pop("batch_size", None)
     if kwargs.get("do_sample") is False:
         kwargs.pop("temperature", None)
         kwargs.pop("top_p", None)

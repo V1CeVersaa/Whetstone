@@ -1,0 +1,35 @@
+# OpenR1-Math-220k smoke test: the real math adapter with Qwen3-0.6B-Base.
+# Also the reference config for the torchrun 2-process acceptance check:
+#   torchrun --standalone --nproc_per_node=2 scripts/run_eval.py \
+#     --config configs/eval/openr1_math_smoke.yaml
+run:
+  name: openr1_math_smoke_qwen3_06b
+  seed: 42
+  output_root: runs
+
+dataset:
+  name: openr1_math
+  split: train
+  limit: 20
+
+prompt:
+  template_id: math_cot_boxed_v1
+
+model:
+  name_or_path: Qwen/Qwen3-0.6B-Base
+  dtype: bf16
+  device: cuda
+
+generation:
+  max_new_tokens: 512
+  do_sample: false
+  temperature: 0.0
+  top_p: 1.0
+  num_return_sequences: 1
+
+verifier:
+  name: math_answer
+
+runtime:
+  distributed: false
+  log_every: 5

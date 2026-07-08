@@ -1,0 +1,5 @@
+# Runtime fragment: single-GPU run (the default posture for smoke evals).
+runtime:
+  distributed: false
+  device: cuda
+  log_every: 5

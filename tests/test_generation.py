@@ -100,8 +100,35 @@ def test_generate_completions_rejects_multiple_return_sequences() -> None:
         )
 
 
+def test_generate_completions_chunks_by_batch_size() -> None:
+    class CountingModel(FakeModel):
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def generate(self, **kwargs):
+            self.calls += 1
+            return super().generate(**kwargs)
+
+    prompts = [
+        RenderedPrompt(uid="u1", template_id="t", text="short prompt"),
+        RenderedPrompt(uid="u2", template_id="t", text="long prompt tokens"),
+    ]
+    model = CountingModel()
+    completions = generate_completions(
+        model=model,
+        tokenizer=FakeTokenizer(),
+        prompts=prompts,
+        generation_config={"max_new_tokens": 4, "batch_size": 1},
+        model_name_or_path="fake",
+        device=None,
+    )
+
+    assert model.calls == 2
+    assert [completion.uid for completion in completions] == ["u1", "u2"]
+
+
 def test_model_generate_kwargs_drops_sampling_only_fields_for_greedy_generation() -> None:
     kwargs = model_generate_kwargs(
-        {"backend": "mock", "do_sample": False, "temperature": 0.0, "top_p": 1.0}
+        {"backend": "mock", "batch_size": 32, "do_sample": False, "temperature": 0.0, "top_p": 1.0}
     )
     assert kwargs == {"do_sample": False}

@@ -2,12 +2,12 @@ from whetstone.core.registry import Registry
 from whetstone.core.types import RenderedPrompt, WhetstoneExample
 from whetstone.prompts.base import PromptTemplate
 from whetstone.prompts.code import CODE_PYTHON_SOLUTION_V1
-from whetstone.prompts.math import MATH_COT_BOXED_V1
+from whetstone.prompts.math import MATH_COT_BOXED_FEWSHOT_V1, MATH_COT_BOXED_V1
 
 # Templates are registered under their own ``template_id`` so a prediction's
 # recorded id is exactly the lookup key.
 TEMPLATE_REGISTRY: Registry[PromptTemplate] = Registry()
-for _template in (MATH_COT_BOXED_V1, CODE_PYTHON_SOLUTION_V1):
+for _template in (MATH_COT_BOXED_V1, MATH_COT_BOXED_FEWSHOT_V1, CODE_PYTHON_SOLUTION_V1):
     TEMPLATE_REGISTRY.register(_template.template_id, _template)
 
 
