@@ -28,7 +28,7 @@ generation:
   num_return_sequences: 1
 
 verifier:
-  name: math_answer
+  name: math_verify
 
 runtime:
   distributed: false

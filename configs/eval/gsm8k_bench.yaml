@@ -14,7 +14,7 @@
 # the comparison needs to be tight.
 
 run:
-  name: gsm8k_bench
+  name: gsm8k_bench_zeroshot
   seed: 42
   output_root: runs
 
@@ -32,15 +32,21 @@ model:
   device: cuda
 
 generation:
+  # Batch wall time is set by its longest row (a straggler taxes the whole
+  # batch once), so FEWER, larger batches pay that tax fewer times — do not
+  # shrink batch_size to fight stragglers; it is a memory knob. The straggler
+  # length itself is capped by max_new_tokens: legit zero-shot answers have
+  # median ~165 tokens, and rows that hit the cap are repetition loops that
+  # would be judged no-answer at any budget. 512 halves the worst batch.
   batch_size: 32
-  max_new_tokens: 1024
+  max_new_tokens: 512
   do_sample: false
   temperature: 0.0
   top_p: 1.0
   num_return_sequences: 1
 
 verifier:
-  name: math_answer
+  name: math_verify
 
 runtime:
   distributed: false

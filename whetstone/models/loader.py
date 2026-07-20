@@ -3,7 +3,10 @@ from typing import Any
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from whetstone.models.tokenization import configure_tokenizer_for_generation
+from whetstone.models.tokenization import (
+    configure_tokenizer_for_generation,
+    configure_tokenizer_for_training,
+)
 from whetstone.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -32,14 +35,46 @@ def load_causal_lm(
         A ``(model, tokenizer)`` tuple.
     """
 
-    logger.info("Loading model %s (dtype=%s, device=%s)", name_or_path, dtype, device)
+    tokenizer = load_tokenizer(
+        name_or_path,
+        trust_remote_code=trust_remote_code,
+    )
+    model = load_causal_lm_model(
+        name_or_path=name_or_path,
+        dtype=dtype,
+        device=device,
+        trust_remote_code=trust_remote_code,
+    )
+    return model, tokenizer
 
-    torch_dtype = resolve_torch_dtype(torch, dtype)
+
+def load_tokenizer(
+    name_or_path: str,
+    *,
+    trust_remote_code: bool = False,
+    for_training: bool = False,
+) -> Any:
+    """Load and configure a tokenizer without materializing model weights."""
+    logger.info("Loading tokenizer %s", name_or_path)
     tokenizer = AutoTokenizer.from_pretrained(
         name_or_path,
         trust_remote_code=trust_remote_code,
     )
-    tokenizer = configure_tokenizer_for_generation(tokenizer)
+    if for_training:
+        return configure_tokenizer_for_training(tokenizer)
+    return configure_tokenizer_for_generation(tokenizer)
+
+
+def load_causal_lm_model(
+    *,
+    name_or_path: str,
+    dtype: str = "bf16",
+    device: str = "cuda",
+    trust_remote_code: bool = False,
+) -> Any:
+    """Load only causal-LM weights, leaving tokenizer work to the caller."""
+    logger.info("Loading model %s (dtype=%s, device=%s)", name_or_path, dtype, device)
+    torch_dtype = resolve_torch_dtype(torch, dtype)
 
     model = AutoModelForCausalLM.from_pretrained(
         name_or_path,
@@ -51,7 +86,7 @@ def load_causal_lm(
     model.eval()
 
     logger.info("Model ready on %s", device)
-    return model, tokenizer
+    return model
 
 
 def resolve_torch_dtype(torch_module: Any, dtype: str) -> Any:

@@ -4,16 +4,16 @@ from whetstone.core.config import VerifierConfig
 from whetstone.core.registry import Registry
 from whetstone.verify.base import Verifier
 from whetstone.verify.code_exec import CodeExecConfig, CodeExecVerifier, verify_code_completion
-from whetstone.verify.math_answer import MathAnswerVerifier, verify_math_completion
+from whetstone.verify.math_verify import MathVerifyVerifier
 
 # Verifiers have different constructor signatures, so the registry stores a
 # factory ``(VerifierConfig) -> Verifier`` per name rather than the class.
 VERIFIER_REGISTRY: Registry[Callable[[VerifierConfig], Verifier]] = Registry()
 
 
-@VERIFIER_REGISTRY.decorator("math_answer")
-def _build_math_answer(config: VerifierConfig) -> Verifier:
-    return MathAnswerVerifier(max_chars=config.max_chars)
+@VERIFIER_REGISTRY.decorator("math_verify")
+def _build_math_verify(config: VerifierConfig) -> Verifier:
+    return MathVerifyVerifier(max_chars=config.max_chars)
 
 
 @VERIFIER_REGISTRY.decorator("code_exec")
@@ -40,9 +40,8 @@ def build_verifier(config: VerifierConfig) -> Verifier:
 __all__ = [
     "VERIFIER_REGISTRY",
     "CodeExecVerifier",
-    "MathAnswerVerifier",
+    "MathVerifyVerifier",
     "Verifier",
     "build_verifier",
     "verify_code_completion",
-    "verify_math_completion",
 ]

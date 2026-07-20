@@ -31,6 +31,7 @@ from typing import Any
 
 import yaml
 
+from whetstone.core.config import parse_set_overrides, put_dotted_override
 from whetstone.eval.runner import run_evaluation
 
 SUMMARY_KEYS = [
@@ -83,39 +84,24 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def put_dotted(overrides: dict[str, Any], dotted_key: str, value: Any) -> None:
-    """Set ``overrides['a']['b'] = value`` for a dotted key ``"a.b"``."""
-    keys = dotted_key.split(".")
-    node = overrides
-    for key in keys[:-1]:
-        node = node.setdefault(key, {})
-    node[keys[-1]] = value
-
-
 def build_overrides(args: argparse.Namespace) -> dict[str, Any]:
-    """Translate CLI flags into a nested config-override dict."""
+    """Translate CLI flags into a nested config-override dict (--set wins)."""
     overrides: dict[str, Any] = {}
     if args.model is not None:
-        put_dotted(overrides, "model.name_or_path", args.model)
+        put_dotted_override(overrides, "model.name_or_path", args.model)
     if args.dataset is not None:
-        put_dotted(overrides, "dataset.name", args.dataset)
+        put_dotted_override(overrides, "dataset.name", args.dataset)
     if args.split is not None:
-        put_dotted(overrides, "dataset.split", args.split)
+        put_dotted_override(overrides, "dataset.split", args.split)
     if args.limit is not None:
-        put_dotted(overrides, "dataset.limit", yaml.safe_load(args.limit))
+        put_dotted_override(overrides, "dataset.limit", yaml.safe_load(args.limit))
     if args.run_name is not None:
-        put_dotted(overrides, "run.name", args.run_name)
+        put_dotted_override(overrides, "run.name", args.run_name)
     if args.output_dir is not None:
-        put_dotted(overrides, "run.output_dir", args.output_dir)
+        put_dotted_override(overrides, "run.output_dir", args.output_dir)
     if args.seed is not None:
-        put_dotted(overrides, "run.seed", args.seed)
-    for item in args.set:
-        dotted_key, separator, raw_value = item.partition("=")
-        if not separator or not dotted_key:
-            msg = f"--set expects SECTION.KEY=VALUE, got {item!r}"
-            raise SystemExit(msg)
-        put_dotted(overrides, dotted_key.strip(), yaml.safe_load(raw_value))
-    return overrides
+        put_dotted_override(overrides, "run.seed", args.seed)
+    return parse_set_overrides(args.set, into=overrides)
 
 
 def print_summary(run_dir: Path) -> None:
@@ -135,7 +121,11 @@ def print_summary(run_dir: Path) -> None:
 
 def main() -> None:
     args = parse_args()
-    run_dir = run_evaluation(args.config, overrides=build_overrides(args))
+    try:
+        overrides = build_overrides(args)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    run_dir = run_evaluation(args.config, overrides=overrides)
     if int(os.environ.get("RANK", "0")) == 0:
         print_summary(Path(run_dir))
         print(run_dir)

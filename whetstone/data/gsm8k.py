@@ -14,6 +14,7 @@ class GSM8KAdapter:
     """
 
     name = "gsm8k"
+    domain = "math"
 
     def __init__(
         self,

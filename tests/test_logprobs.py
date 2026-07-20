@@ -84,6 +84,4 @@ def test_response_mask_controls_loss_region() -> None:
     # Widening the mask changes which tokens are counted.
     wider = response_mask.clone()
     wider[0, 2:] = 1
-    assert not torch.allclose(
-        sequence_logprobs(logits, input_ids, wider), original_seq
-    )
+    assert not torch.allclose(sequence_logprobs(logits, input_ids, wider), original_seq)

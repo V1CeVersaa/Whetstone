@@ -1,7 +1,7 @@
 # Mock-backend artifact debugging: exercises the full pipeline (dataset ->
 # prompts -> completions -> verifier -> run artifacts) without loading a model.
 # The mock backend echoes each example's reference solution as the completion,
-# so math_answer should judge nearly every row "correct".
+# so math_verify should judge nearly every row "correct".
 run:
   name: gsm8k_mock
   seed: 42
@@ -26,7 +26,7 @@ generation:
   top_p: 1.0
 
 verifier:
-  name: math_answer
+  name: math_verify
 
 runtime:
   distributed: false

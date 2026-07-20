@@ -14,6 +14,7 @@ class OpenR1MathAdapter:
     """
 
     name = "openr1_math"
+    domain = "math"
 
     def __init__(
         self,
@@ -51,6 +52,8 @@ class OpenR1MathAdapter:
         ]
         metadata = {key: row[key] for key in metadata_keys if key in row}
         metadata["row_index"] = index
+        solution = row.get("solution")
+        answer = row.get("answer")
 
         return WhetstoneExample(
             uid=f"openr1_math:{split}:{row.get('uuid')}",
@@ -58,7 +61,7 @@ class OpenR1MathAdapter:
             source="openr1_math",
             split=split,
             prompt_raw=str(row.get("problem")),
-            reference_solution=str(row.get("solution")),
-            final_answer=str(row.get("answer")),
+            reference_solution=str(solution) if solution is not None else None,
+            final_answer=str(answer) if answer is not None else None,
             metadata=metadata,
         )

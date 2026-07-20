@@ -9,7 +9,7 @@ BASE = {
     "dataset": {"name": "gsm8k", "split": "test", "limit": 5},
     "prompt": {"template_id": "math_cot_boxed_v1"},
     "model": {"name_or_path": "Qwen/Qwen3-0.6B-Base", "device": "cuda"},
-    "verifier": {"name": "math_answer"},
+    "verifier": {"name": "math_verify"},
 }
 
 
@@ -51,6 +51,36 @@ def test_negative_temperature_is_rejected() -> None:
         EvalConfig.model_validate(bad)
 
 
+def test_sampling_requires_positive_temperature() -> None:
+    bad = {**BASE, "generation": {"do_sample": True, "temperature": 0.0}}
+    with pytest.raises(ValidationError, match="temperature"):
+        EvalConfig.model_validate(bad)
+
+
+def test_top_p_zero_is_rejected() -> None:
+    bad = {**BASE, "generation": {"top_p": 0.0}}
+    with pytest.raises(ValidationError, match="top_p"):
+        EvalConfig.model_validate(bad)
+
+
+def test_zero_dataset_limit_is_rejected() -> None:
+    bad = {**BASE, "dataset": {"name": "gsm8k", "split": "test", "limit": 0}}
+    with pytest.raises(ValidationError, match="limit"):
+        EvalConfig.model_validate(bad)
+
+
+def test_multiple_return_sequences_are_rejected_by_eval_schema() -> None:
+    bad = {**BASE, "generation": {"num_return_sequences": 2}}
+    with pytest.raises(ValidationError, match="num_return_sequences"):
+        EvalConfig.model_validate(bad)
+
+
+def test_nonpositive_verifier_limits_are_rejected() -> None:
+    bad = {**BASE, "verifier": {"name": "math_verify", "max_chars": 0}}
+    with pytest.raises(ValidationError, match="max_chars"):
+        EvalConfig.model_validate(bad)
+
+
 def test_mock_backend_does_not_require_model_name() -> None:
     mock = {**BASE, "model": {"backend": "mock", "mock_mode": "reference"}}
     config = EvalConfig.model_validate(mock)
@@ -80,13 +110,13 @@ def test_runtime_device_overrides_model_device() -> None:
 
 def test_unknown_dataset_reference_is_rejected_before_runner_work() -> None:
     config = EvalConfig.model_validate({**BASE, "dataset": {"name": "made_up", "split": "test"}})
-    with pytest.raises(ValueError, match="dataset.name"):
+    with pytest.raises(ValueError, match=r"dataset\.name"):
         validate_config_references(config)
 
 
 def test_unknown_prompt_reference_is_rejected_before_runner_work() -> None:
     config = EvalConfig.model_validate({**BASE, "prompt": {"template_id": "made_up_v1"}})
-    with pytest.raises(ValueError, match="prompt.template_id"):
+    with pytest.raises(ValueError, match=r"prompt\.template_id"):
         validate_config_references(config)
 
 

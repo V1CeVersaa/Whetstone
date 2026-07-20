@@ -16,6 +16,7 @@ class TacoCobaltAdapter:
     """
 
     name = "taco_cobalt"
+    domain = "code"
 
     def __init__(
         self,

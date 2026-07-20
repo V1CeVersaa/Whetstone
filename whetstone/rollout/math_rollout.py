@@ -5,7 +5,11 @@ from typing import Any
 import torch
 
 from whetstone.core.types import ModelCompletion, RenderedPrompt, WhetstoneExample
-from whetstone.models.generation import model_generate_kwargs
+from whetstone.models.generation import (
+    generation_model_context,
+    model_generate_kwargs,
+    true_completion_span,
+)
 from whetstone.train.types import MathRolloutSample
 from whetstone.utils.logging import get_logger
 from whetstone.verify.base import Verifier
@@ -113,6 +117,11 @@ def generate_grouped_rollouts(
                         "gold_answer": example.final_answer,
                         "template_id": prompt.template_id,
                         "group_member": member,
+                        "generation_config": dict(generation_config),
+                        "tokenizer_ids": {
+                            "eos_token_id": getattr(tokenizer, "eos_token_id", None),
+                            "pad_token_id": getattr(tokenizer, "pad_token_id", None),
+                        },
                     },
                 )
             )
@@ -134,11 +143,52 @@ def _generate_real(
     generation_config: Mapping[str, Any],
     device: str | None,
 ) -> tuple[list[list[int]], list[list[int]], list[str]]:
-    """Sample grouped completions with ``model.generate`` and slice out token ids."""
-    logger.debug(
+    """Sample grouped completions in bounded prompt batches."""
+    batch_size = int(generation_config.get("batch_size") or len(prompt_texts)) or 1
+    num_batches = (len(prompt_texts) + batch_size - 1) // batch_size
+    eos_id = getattr(tokenizer, "eos_token_id", None)
+    pad_id = getattr(tokenizer, "pad_token_id", None)
+    if "stop_strings" in generation_config and pad_id == eos_id and group_size > 1:
+        msg = (
+            "Math-RL stop_strings require pad_token_id != eos_token_id when group_size > 1; "
+            "otherwise stop-string padding is indistinguishable from sampled EOS tokens"
+        )
+        raise ValueError(msg)
+    logger.info(
         f"Rollout generation: {len(prompt_texts)} prompt(s) x {group_size} completions "
-        f"(max_new_tokens={generation_config.get('max_new_tokens')})"
+        f"in {num_batches} batch(es) (prompt_batch_size={batch_size}, "
+        f"max_new_tokens={generation_config.get('max_new_tokens')})"
     )
+
+    prompt_ids_per_prompt: list[list[int]] = []
+    completion_ids_per_sample: list[list[int]] = []
+    completion_texts: list[str] = []
+    with generation_model_context(model):
+        for start in range(0, len(prompt_texts), batch_size):
+            batch_prompt_ids, batch_completion_ids, batch_completion_texts = _generate_real_batch(
+                model=model,
+                tokenizer=tokenizer,
+                prompt_texts=prompt_texts[start : start + batch_size],
+                group_size=group_size,
+                generation_config=generation_config,
+                device=device,
+            )
+            prompt_ids_per_prompt.extend(batch_prompt_ids)
+            completion_ids_per_sample.extend(batch_completion_ids)
+            completion_texts.extend(batch_completion_texts)
+    return prompt_ids_per_prompt, completion_ids_per_sample, completion_texts
+
+
+def _generate_real_batch(
+    *,
+    model: Any,
+    tokenizer: Any,
+    prompt_texts: list[str],
+    group_size: int,
+    generation_config: Mapping[str, Any],
+    device: str | None,
+) -> tuple[list[list[int]], list[list[int]], list[str]]:
+    """Run one grouped ``model.generate`` call and keep exact sampled ids."""
     encoded = tokenizer(prompt_texts, padding=True, return_tensors="pt")
     if device is not None and device != "auto":
         encoded = {key: value.to(device) for key, value in encoded.items()}
@@ -146,16 +196,12 @@ def _generate_real(
 
     gen_kwargs = model_generate_kwargs(generation_config)
     gen_kwargs["num_return_sequences"] = group_size
+    if tokenizer.pad_token_id is not None:
+        gen_kwargs.setdefault("pad_token_id", tokenizer.pad_token_id)
     if "stop_strings" in gen_kwargs:
         gen_kwargs.setdefault("tokenizer", tokenizer)
-    was_training = getattr(model, "training", False)
-    model.eval()
-    try:
-        with torch.no_grad():
-            generated = model.generate(**encoded, **gen_kwargs)
-    finally:
-        if was_training:
-            model.train()
+    with torch.no_grad():
+        generated = model.generate(**encoded, **gen_kwargs)
 
     expected = len(prompt_texts) * group_size
     if len(generated) != expected:
@@ -171,17 +217,18 @@ def _generate_real(
         for row in range(len(prompt_texts))
     ]
 
-    eos_id = tokenizer.eos_token_id
+    eos_id = getattr(tokenizer, "eos_token_id", None)
+    pad_id = getattr(tokenizer, "pad_token_id", None)
     completion_ids_per_sample: list[list[int]] = []
     completion_texts: list[str] = []
     for row in range(expected):
         completion = generated[row][prompt_width:]
-        # Keep tokens up to and including the first EOS; the rest is padding.
-        if eos_id is not None:
-            eos_hits = (completion == eos_id).nonzero(as_tuple=True)[0]
-            if eos_hits.numel() > 0:
-                completion = completion[: int(eos_hits[0].item()) + 1]
-        ids = completion.tolist()
+        # Cut at the first EOS (inclusive) or, when pad differs from EOS, at
+        # the first pad (exclusive): rows ended early by stop_strings carry no
+        # EOS and their padding must never enter completion_ids, or the RL
+        # update would train the policy on pad positions.
+        end, _ = true_completion_span(completion, eos_id=eos_id, pad_id=pad_id)
+        ids = completion[:end].tolist()
         completion_ids_per_sample.append(ids)
         completion_texts.append(tokenizer.decode(ids, skip_special_tokens=True))
     return prompt_ids_per_prompt, completion_ids_per_sample, completion_texts

@@ -1,13 +1,14 @@
-"""Shared scaffolding for training runs: run dirs, env metadata, periodic eval.
+"""Shared scaffolding for training runs and isolated checkpoint evaluation.
 
 Training runs reuse Foundation's artifact conventions (timestamped run dirs,
 ``env.json``, ``status.json``) rather than inventing a new style. Periodic
-evaluation is a thin bridge into the existing Foundation eval runner: it
-writes a normal eval config pointing at the checkpoint and calls
-``run_evaluation``, so trained checkpoints are judged by exactly the same
-pipeline as any other model.
+evaluation is a thin bridge into the existing Foundation eval runner: training
+writes a normal standalone eval config pointing at the checkpoint, but never
+loads a second model while the policy and optimizer remain resident. The
+staged config is launched later through ``scripts/run_eval.py``.
 """
 
+import os
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -18,30 +19,86 @@ from whetstone.core.run_id import make_run_id
 from whetstone.distributed.init import DistributedState
 from whetstone.eval.runner import collect_env, write_json, write_status
 from whetstone.train.config import TrainEvalConfig
-from whetstone.utils.logging import get_logger
+from whetstone.utils.hash import stable_hash
+from whetstone.utils.logging import attach_run_dir_logging, get_logger
 
 logger = get_logger(__name__)
+
+
+def ensure_single_process_training(runtime_distributed: bool) -> None:
+    """Reject accidental torchrun use until the planned DDP path exists.
+
+    Without DDP wrapping and rank-owned artifact writes, multiple training
+    processes would update independent policies and race on the same run
+    directory. Failing before dataset/model loading keeps Phase 1 honest.
+    """
+    world_size = int(os.environ.get("WORLD_SIZE", "1"))
+    under_torchrun = "RANK" in os.environ or world_size > 1
+    if runtime_distributed or under_torchrun:
+        msg = (
+            "Phase 1 training is single-process only; do not launch train_sft.py or "
+            "train_math_rl.py with torchrun. DDP is deferred to Post.md Phase 2."
+        )
+        raise RuntimeError(msg)
+
+
+def validate_train_references(
+    dataset_name: str,
+    template_id: str,
+    *,
+    expected_domain: str = "math",
+) -> None:
+    """Fail before run-dir creation when a config references unknown ids.
+
+    Shared by every training entry point so a typo'd dataset or template name
+    is caught before any side effect (run directory, dataset download).
+    """
+    from whetstone.data import DATASET_REGISTRY, get_dataset_domain
+    from whetstone.prompts.templates import TEMPLATE_REGISTRY
+
+    problems = []
+    if dataset_name.strip().lower() not in DATASET_REGISTRY.names():
+        problems.append(
+            f"dataset.name={dataset_name!r} (known: {', '.join(DATASET_REGISTRY.names())})"
+        )
+    elif get_dataset_domain(dataset_name) != expected_domain:
+        problems.append(
+            f"dataset.name={dataset_name!r} has domain={get_dataset_domain(dataset_name)!r}, "
+            f"expected {expected_domain!r}"
+        )
+    if template_id not in TEMPLATE_REGISTRY.names():
+        problems.append(
+            f"prompt.template_id={template_id!r} (known: {', '.join(TEMPLATE_REGISTRY.names())})"
+        )
+    if problems:
+        msg = "Unknown config reference(s): " + "; ".join(problems)
+        raise ValueError(msg)
 
 
 def create_train_run_dir(run: RunConfig, default_name: str) -> Path:
     """Create the run directory for a (single-process) training run.
 
     Honors an explicit ``run.output_dir``; otherwise builds a timestamped
-    directory under ``run.output_root``, exactly like the eval runner.
+    directory under ``run.output_root``, exactly like the eval runner. Also
+    mirrors all subsequent logging into ``<run_dir>/run.log`` so queued or
+    detached runs (pueue, nohup) keep their log beside the artifacts.
     """
     if run.output_dir:
-        return ensure_dir(resolve_project_path(run.output_dir))
-    output_root = resolve_project_path(run.output_root)
-    return ensure_dir(output_root / make_run_id(run.name or default_name))
+        run_dir = ensure_dir(resolve_project_path(run.output_dir))
+    else:
+        output_root = resolve_project_path(run.output_root)
+        run_dir = ensure_dir(output_root / make_run_id(run.name or default_name))
+    attach_run_dir_logging(run_dir)
+    return run_dir
 
 
 def write_train_run_metadata(run_dir: Path, config: Any, *, device: str) -> None:
     """Write ``train_config.yaml``, ``env.json``, and an initial ``status.json``."""
     save_yaml(config, run_dir / "train_config.yaml")
-    state = DistributedState(
-        enabled=False, rank=0, local_rank=0, world_size=1, device=device
-    )
-    write_json(run_dir / "env.json", collect_env(state))
+    state = DistributedState(enabled=False, rank=0, local_rank=0, world_size=1, device=device)
+    env = collect_env(state)
+    env["config_sha256"] = stable_hash(config.model_dump(mode="json"))
+    write_json(run_dir / "env.json", env)
     write_status(run_dir, status="running", stage="training")
 
 
@@ -70,7 +127,7 @@ def build_checkpoint_eval_config(
     }
 
 
-def run_checkpoint_eval(
+def stage_checkpoint_eval(
     eval_config: TrainEvalConfig,
     *,
     run_dir: Path,
@@ -80,14 +137,14 @@ def run_checkpoint_eval(
     device: str,
     dtype: str,
 ) -> Path:
-    """Evaluate a saved checkpoint with the Foundation eval runner.
+    """Write a standalone Foundation eval config for a saved checkpoint.
 
     The eval config is materialized as YAML inside ``eval/step_XXXXXX`` so the
-    evaluation is reproducible standalone, then executed in-process. Returns
-    the eval run directory.
+    evaluation is reproducible. It is deliberately not executed here: loading
+    an evaluator beside the resident training model and optimizer can OOM and
+    couples evaluator failures to training. Returns the config path to launch
+    in a separate process after training or on another GPU.
     """
-    from whetstone.eval.runner import run_evaluation  # noqa: PLC0415  (import cycle guard)
-
     eval_dir = ensure_dir(run_dir / "eval" / f"step_{step:06d}")
     config_dict = build_checkpoint_eval_config(
         eval_config,
@@ -99,16 +156,19 @@ def run_checkpoint_eval(
     )
     config_path = eval_dir / "eval_config.yaml"
     save_yaml(config_dict, config_path)
-    logger.info(f"Evaluating checkpoint {checkpoint_dir} -> {eval_dir}")
-    return run_evaluation(config_path)
+    logger.info(
+        f"Staged isolated checkpoint eval config: {config_path} | "
+        f"launch later with: uv run scripts/run_eval.py --config {config_path}"
+    )
+    return config_path
 
 
 def enable_gradient_checkpointing(model: Any) -> None:
     """Turn on activation checkpointing for training forwards, if supported.
 
     Also disables the KV cache on the model config (incompatible with
-    checkpointing during training). HF applies checkpointing only when
-    ``model.training`` is True, so eval-mode ``generate`` keeps its cache.
+    checkpointing during training). The shared generation context temporarily
+    restores ``use_cache=True`` for rollout and then restores this setting.
     """
     if hasattr(model, "gradient_checkpointing_enable"):
         model.gradient_checkpointing_enable()
@@ -133,7 +193,7 @@ def cycle_index_batches(
     reproducible from its config alone. The final short batch of an epoch is
     yielded as-is rather than padded or dropped.
     """
-    import torch  # noqa: PLC0415  (keep module importable without torch at doc time)
+    import torch
 
     epoch = 0
     while True:

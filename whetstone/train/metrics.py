@@ -37,12 +37,13 @@ def summarize_rollout_step(
     rewards = [sample.reward for sample in samples]
     completion_tokens = [sample.num_completion_tokens for sample in samples]
     reasons = [sample.verifier_reason for sample in samples]
+    boxed_completions = sum(1 for sample in samples if "\\boxed{" in sample.completion_text)
+    # Extraction failures under math_verify: nothing judgeable was produced.
     parse_failures = {
         "empty_completion",
         "too_long",
         "no_answer_found",
-        "parse_error",
-        "unsupported_expression",
+        "verifier_error",
     }
 
     groups = [rewards[i : i + group_size] for i in range(0, len(rewards), group_size)]
@@ -58,6 +59,7 @@ def summarize_rollout_step(
         "pass_rate": sum(1 for sample in samples if sample.passed) / max(1, len(samples)),
         "parse_success_rate": sum(1 for reason in reasons if reason not in parse_failures)
         / max(1, len(reasons)),
+        "boxed_completion_rate": boxed_completions / max(1, len(samples)),
         "no_answer_rate": reasons.count("no_answer_found") / max(1, len(reasons)),
         "wrong_answer_rate": reasons.count("wrong_answer") / max(1, len(reasons)),
         "avg_completion_tokens": fmean(completion_tokens) if completion_tokens else 0.0,

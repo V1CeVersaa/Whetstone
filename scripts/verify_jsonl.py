@@ -9,7 +9,7 @@ require rerunning the model.
 Example:
     python scripts/verify_jsonl.py \
         --input runs/<run_dir>/predictions.jsonl \
-        --verifier math_answer \
+        --verifier math_verify \
         --output runs/<run_dir>/predictions_reverified.jsonl
 """
 
@@ -40,7 +40,7 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional path to write re-verified rows (never overwrites the input in place)",
     )
-    parser.add_argument("--max-chars", type=int, default=20000, help="[math_answer] length cap")
+    parser.add_argument("--max-chars", type=int, default=20000, help="[math_verify] length cap")
     parser.add_argument("--tests", default="public", help="[code_exec] test group to grade")
     parser.add_argument(
         "--timeout-seconds", type=float, default=3.0, help="[code_exec] per-test timeout"

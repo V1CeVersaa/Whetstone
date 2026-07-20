@@ -1,5 +1,5 @@
 # GSM8K smoke test: 20 real generations from Qwen3-0.6B-Base, graded by the
-# strict math_answer verifier. GSM8K is a smoke-test dataset only; OpenR1-Math
+# math_verify verifier. GSM8K is a smoke-test dataset only; OpenR1-Math
 # is the real math adapter.
 run:
   name: gsm8k_smoke_qwen3_06b
@@ -27,7 +27,7 @@ generation:
   num_return_sequences: 1
 
 verifier:
-  name: math_answer
+  name: math_verify
 
 runtime:
   distributed: false

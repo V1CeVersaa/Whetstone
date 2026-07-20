@@ -19,6 +19,10 @@ model:
   dtype: bf16
   device: cuda
 
+preprocessing:
+  ensure_verifiable_target: true
+  max_decode_mismatch_rate: 0.0
+
 training:
   max_steps: 100
   batch_size: 1
@@ -28,12 +32,14 @@ training:
   max_grad_norm: 1.0
   lr_scheduler: constant
   max_seq_length: 1024
+  overlong_policy: drop
   gradient_checkpointing: true
   log_every: 5
   save_every: 50
   eval_every: 50
 
 eval:
+  # Staged only; launch the emitted eval_config.yaml after training.
   dataset:
     name: openr1_math
     split: train
@@ -41,7 +47,7 @@ eval:
   prompt:
     template_id: math_cot_boxed_v1
   verifier:
-    name: math_answer
+    name: math_verify
   generation:
     max_new_tokens: 512
     do_sample: false

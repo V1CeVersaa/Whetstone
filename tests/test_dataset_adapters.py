@@ -1,4 +1,5 @@
 from whetstone.core.types import WhetstoneExample
+from whetstone.data import get_dataset_domain
 from whetstone.data.base import load_hf_rows
 from whetstone.data.gsm8k import GSM8KAdapter
 from whetstone.data.openr1_math import OpenR1MathAdapter
@@ -67,6 +68,12 @@ def test_tiny_code_is_offline_fixture_dataset() -> None:
     assert example.tests is not None
     assert len(example.tests["public"]) == 2
     assert example.metadata["fixture"] is True
+
+
+def test_dataset_domains_are_available_without_loading_rows() -> None:
+    assert get_dataset_domain("gsm8k") == "math"
+    assert get_dataset_domain("openr1-math") == "math"
+    assert get_dataset_domain("taco_cobalt") == "code"
 
 
 def test_load_hf_rows_pushes_limit_into_non_streaming_split(monkeypatch) -> None:

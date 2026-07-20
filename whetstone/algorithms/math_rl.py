@@ -1,15 +1,15 @@
-"""Math-RL v0: REINFORCE with per-prompt group baseline (optional KL-to-ref).
+"""Math-RL v0: REINFORCE with a per-prompt group baseline.
 
 This is deliberately *not* PPO and *not* full GRPO: no critic, no value head,
 no reward model, no clipping, no rollout-batch reuse. Each step samples ``G``
 completions per prompt, scores them with the existing math verifier (binary
 reward), centers rewards by the in-group mean, and takes one REINFORCE step.
-The sampled token-level KL term against a frozen reference is an
-approximation, logged as such. Correctness and artifact integrity are the
-goals of v0, not accuracy gains.
+The previously exposed differentiable sampled-log-ratio branch is deliberately
+disabled: future KL support enters through detached reward shaping. Correctness
+and artifact integrity are the goals of v0, not accuracy gains.
 """
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from time import perf_counter
 from typing import Any
@@ -36,22 +36,23 @@ from whetstone.train.config import (
     RLParams,
     load_math_rl_config,
 )
-from whetstone.train.logprobs import masked_token_logprobs
 from whetstone.train.loop import (
     create_train_run_dir,
     cycle_index_batches,
     enable_gradient_checkpointing,
-    run_checkpoint_eval,
+    ensure_single_process_training,
+    stage_checkpoint_eval,
+    validate_train_references,
     write_text_samples,
     write_train_run_metadata,
 )
-from whetstone.train.losses import math_rl_loss
+from whetstone.train.losses import math_rl_loss_terms
 from whetstone.train.metrics import MetricsLogger, summarize_rollout_step
 from whetstone.train.optim import build_lr_scheduler, build_optimizer, clip_gradients
 from whetstone.train.types import MathRolloutSample
 from whetstone.utils.jsonl import append_jsonl
 from whetstone.utils.logging import configure_logging, get_logger
-from whetstone.utils.memory import peak_gpu_memory_mb
+from whetstone.utils.memory import peak_gpu_memory_mb, reset_peak_gpu_memory
 from whetstone.verify import build_verifier
 from whetstone.verify.base import Verifier
 
@@ -60,14 +61,25 @@ logger = get_logger(__name__)
 CheckpointHook = Callable[[Path, int], None]
 
 
-def run_math_rl(config_path: str | Path | Sequence[str | Path]) -> Path:
-    """Run one config-driven Math-RL v0 training run and return its run directory."""
+def run_math_rl(
+    config_path: str | Path | Sequence[str | Path],
+    *,
+    overrides: Mapping[str, Any] | None = None,
+) -> Path:
+    """Run one config-driven Math-RL v0 training run and return its run directory.
+
+    ``overrides`` (e.g. from CLI ``--set`` flags) deep-merge on top of the
+    config files before validation, so the saved ``train_config.yaml`` reflects
+    exactly what ran.
+    """
     config_paths: list[Path] = (
         [Path(config_path)]
-        if isinstance(config_path, (str, Path))
+        if isinstance(config_path, str | Path)
         else [Path(path) for path in config_path]
     )
-    config: MathRLConfig = load_math_rl_config(config_paths)
+    config: MathRLConfig = load_math_rl_config(config_paths, overrides=overrides)
+    validate_train_references(config.dataset.name, config.prompt.template_id)
+    ensure_single_process_training(config.runtime.distributed)
 
     configure_logging(force=True)
     set_seed(config.run.seed)
@@ -78,7 +90,7 @@ def run_math_rl(config_path: str | Path | Sequence[str | Path]) -> Path:
     logger.info(
         f"Math-RL run {run_dir.name} | dataset={config.dataset.name} split={config.dataset.split} "
         f"limit={config.dataset.limit} policy={config.model.policy_name_or_path} "
-        f"reference={config.reference_path or '<disabled>'} device={device}"
+        f"kl=<disabled> device={device}"
     )
     try:
         adapter_kwargs = {"streaming": True} if config.dataset.streaming else {}
@@ -96,25 +108,14 @@ def run_math_rl(config_path: str | Path | Sequence[str | Path]) -> Path:
             device=device,
             trust_remote_code=config.model.trust_remote_code,
         )
-        reference = None
-        if config.reference_path is None:
-            logger.info("kl_beta=0.0: skipping reference model load")
-        else:
-            logger.info(f"Loading frozen KL reference from {config.reference_path}")
-            reference, _ = load_causal_lm(
-                name_or_path=config.reference_path,
-                dtype=config.model.dtype,
-                device=device,
-                trust_remote_code=config.model.trust_remote_code,
-            )
-            reference.requires_grad_(False)
+        logger.info("Phase 1 Math-RL uses kl_beta=0.0; no reference model is loaded")
 
         verifier = build_verifier(config.verifier)
 
         def eval_checkpoint(checkpoint: Path, step: int) -> None:
             if config.eval is None:
                 return
-            run_checkpoint_eval(
+            stage_checkpoint_eval(
                 config.eval,
                 run_dir=run_dir,
                 checkpoint_dir=checkpoint,
@@ -126,7 +127,6 @@ def run_math_rl(config_path: str | Path | Sequence[str | Path]) -> Path:
 
         final_metrics = train_math_rl_loop(
             policy=policy,
-            reference=reference,
             tokenizer=tokenizer,
             examples=examples,
             rendered_prompts=rendered_prompts,
@@ -161,7 +161,6 @@ def run_math_rl(config_path: str | Path | Sequence[str | Path]) -> Path:
 def train_math_rl_loop(
     *,
     policy: Any,
-    reference: Any | None,
     tokenizer: Any,
     examples: list,
     rendered_prompts: list,
@@ -183,16 +182,17 @@ def train_math_rl_loop(
     reward, verifier reason, and advantage -- RL without raw rollout logs is
     not acceptable.
     """
-    if rl.kl_beta > 0.0 and reference is None:
-        msg = "rl.kl_beta > 0 requires a reference model"
+    if rl.kl_beta != 0.0:
+        msg = "Phase 1 Math-RL requires rl.kl_beta=0.0; KL reward shaping is not implemented"
         raise ValueError(msg)
-    if reference is not None:
-        reference.eval()
     if rl.gradient_checkpointing:
         enable_gradient_checkpointing(policy)
     pad_token_id = tokenizer.pad_token_id
     if pad_token_id is None:
         pad_token_id = tokenizer.eos_token_id
+    if pad_token_id is None:
+        msg = "Math-RL tokenizer requires pad_token_id or eos_token_id"
+        raise ValueError(msg)
 
     optimizer = build_optimizer(
         policy, learning_rate=rl.learning_rate, weight_decay=rl.weight_decay
@@ -209,10 +209,12 @@ def train_math_rl_loop(
     start_time = perf_counter()
     logger.info(
         f"Math-RL: {len(examples)} prompts, {rl.max_steps} steps, "
-        f"B={rl.prompts_per_step} x G={rl.group_size}, kl_beta={rl.kl_beta}, device={device}"
+        f"B={rl.prompts_per_step} x G={rl.group_size}, kl=disabled, device={device}"
     )
 
+    run_peak_memory: float | None = None
     for step in range(1, rl.max_steps + 1):
+        reset_peak_gpu_memory()
         rollout_start = perf_counter()
         batch_indices = next(prompt_batches)
         batch_examples = [examples[i] for i in batch_indices]
@@ -240,15 +242,14 @@ def train_math_rl_loop(
         rollout_time = perf_counter() - rollout_start
 
         update_start = perf_counter()
-        sequences = [
-            (prompt_ids[-max(1, rl.max_seq_length - len(completion_ids)) :], completion_ids)
-            for prompt_ids, completion_ids in zip(
-                rollout.prompt_token_ids, rollout.completion_token_ids, strict=True
-            )
-        ]
+        sequences = build_update_sequences(
+            rollout.prompt_token_ids,
+            rollout.completion_token_ids,
+            max_seq_length=rl.max_seq_length,
+        )
         # The update forward is chunked over sequences: B*G long sequences at
-        # once materialize a (B*G, seq, 150k-vocab) logits tensor for both the
-        # reference and the policy, which OOMs a 24GB GPU. Per-chunk losses are
+        # once materialize a (B*G, seq, 150k-vocab) policy-logits tensor, which
+        # can OOM a 24GB GPU. Per-chunk losses are
         # reweighted so the accumulated gradient equals the full-batch one.
         micro = rl.update_micro_batch_size or len(sequences)
         chunks = [
@@ -256,13 +257,11 @@ def train_math_rl_loop(
             for i in range(0, len(sequences), micro)
         ]
         total_sequences = len(sequences)
-        total_response_tokens = max(1, sum(int(c["response_mask"].sum()) for c in chunks))
         advantages_tensor = torch.tensor(advantages, dtype=torch.float32)
 
         policy.train()
         optimizer.zero_grad(set_to_none=True)
-        policy_loss_value = 0.0
-        kl_value = 0.0
+        policy_loss_sum_value = 0.0
         offset = 0
         for chunk in chunks:
             batch = {key: value.to(device) for key, value in chunk.items()}
@@ -270,66 +269,54 @@ def train_math_rl_loop(
             chunk_advantages = advantages_tensor[offset : offset + chunk_size].to(device)
             offset += chunk_size
 
-            reference_token_logprobs = None
-            if rl.kl_beta > 0.0 and reference is not None:
-                with torch.no_grad():
-                    ref_logits = reference(
-                        input_ids=batch["input_ids"], attention_mask=batch["attention_mask"]
-                    ).logits
-                    reference_token_logprobs = masked_token_logprobs(
-                        ref_logits, batch["input_ids"], batch["response_mask"]
-                    )
-                    del ref_logits
-
             logits = policy(
                 input_ids=batch["input_ids"], attention_mask=batch["attention_mask"]
             ).logits
-            losses = math_rl_loss(
+            terms = math_rl_loss_terms(
                 logits=logits,
                 input_ids=batch["input_ids"],
                 response_mask=batch["response_mask"],
                 advantages=chunk_advantages,
-                kl_beta=rl.kl_beta,
-                reference_token_logprobs=reference_token_logprobs,
             )
-            # math_rl_loss normalizes within the chunk; rescale each term so
-            # the sum over chunks matches full-batch normalization exactly.
-            policy_weight = chunk_size / total_sequences
-            kl_weight = int(batch["response_mask"].sum()) / total_response_tokens
-            chunk_loss = losses["policy_loss"] * policy_weight + rl.kl_beta * (
-                losses["kl"] * kl_weight
-            )
+            # Sums are additive across chunks: normalizing each by the global
+            # sequence count makes the accumulated gradient equal the
+            # full-batch REINFORCE gradient.
+            chunk_loss = terms.policy_loss_sum / total_sequences
             chunk_loss.backward()
-            policy_loss_value += float(losses["policy_loss"].detach()) * policy_weight
-            kl_value += float(losses["kl"].detach()) * kl_weight
+            policy_loss_sum_value += float(terms.policy_loss_sum.detach())
             del logits
 
         grad_norm = clip_gradients(policy, rl.max_grad_norm)
         optimizer.step()
         scheduler.step()
-        rl_loss_value = policy_loss_value + rl.kl_beta * kl_value
+        policy_loss_value = policy_loss_sum_value / total_sequences
+        rl_loss_value = policy_loss_value
         update_time = perf_counter() - update_start
 
         for sample, sample_advantage in zip(rollout.samples, advantages, strict=True):
-            append_jsonl({"step": step, **sample.to_dict(), "advantage": sample_advantage}, rollout_path)
+            append_jsonl(
+                {"step": step, **sample.to_dict(), "advantage": sample_advantage},
+                rollout_path,
+            )
         reward_history.extend(rewards)
         last_samples = rollout.samples
+
+        step_peak_memory = peak_gpu_memory_mb()
+        if step_peak_memory is not None:
+            run_peak_memory = max(run_peak_memory or 0.0, step_peak_memory)
 
         if step % rl.log_every == 0 or step == rl.max_steps:
             completion_tokens = sum(sample.num_completion_tokens for sample in rollout.samples)
             row = {
                 "rl_loss": rl_loss_value,
                 "policy_loss": policy_loss_value,
-                "kl": kl_value,
                 "learning_rate": scheduler.get_last_lr()[0],
                 "grad_norm": grad_norm,
                 "rollout_time": rollout_time,
                 "update_time": update_time,
                 "tokens_per_second": completion_tokens / rollout_time if rollout_time else 0.0,
-                "peak_gpu_memory_mb": peak_gpu_memory_mb(),
-                **summarize_rollout_step(
-                    rollout.samples, advantages, group_size=rl.group_size
-                ),
+                "peak_gpu_memory_mb": step_peak_memory,
+                **summarize_rollout_step(rollout.samples, advantages, group_size=rl.group_size),
             }
             metrics_logger.log(step, row)
             logger.info(
@@ -352,15 +339,7 @@ def train_math_rl_loop(
                 training_state={"step": step, "max_steps": rl.max_steps},
             )
             if should_eval and on_eval_checkpoint is not None:
-                # Periodic eval failures must not kill the RL run; the
-                # checkpoint is saved and can be evaluated offline.
-                try:
-                    on_eval_checkpoint(checkpoint, step)
-                except Exception as exc:
-                    logger.error(
-                        f"Checkpoint eval at step {step} failed "
-                        f"({type(exc).__name__}: {exc}); continuing training"
-                    )
+                on_eval_checkpoint(checkpoint, step)
 
     save_checkpoint(
         model=policy,
@@ -377,12 +356,42 @@ def train_math_rl_loop(
     return {
         "num_steps": rl.max_steps,
         "num_rollout_samples": len(reward_history),
-        "mean_reward_overall": sum(reward_history) / len(reward_history)
-        if reward_history
-        else 0.0,
+        "mean_reward_overall": sum(reward_history) / len(reward_history) if reward_history else 0.0,
         "wall_clock_seconds": wall_clock,
-        "peak_gpu_memory_mb": peak_gpu_memory_mb(),
+        "peak_gpu_memory_mb": run_peak_memory,
     }
+
+
+def build_update_sequences(
+    prompt_token_ids: list[list[int]],
+    completion_token_ids: list[list[int]],
+    *,
+    max_seq_length: int,
+) -> list[tuple[list[int], list[int]]]:
+    """Validate rollout sequences against the update cap without truncation.
+
+    The sampled completion is the action and its prompt is the conditioning
+    context. Both must stay token-identical to generation; trimming either one
+    would compute update log-probabilities under a different trajectory.
+    Configuration validation keeps ``max_new_tokens`` below the update cap;
+    this runtime guard also covers long prompts, injected generators, and
+    direct callers.
+    """
+    sequences: list[tuple[list[int], list[int]]] = []
+    for prompt_ids, completion_ids in zip(prompt_token_ids, completion_token_ids, strict=True):
+        total_length = len(prompt_ids) + len(completion_ids)
+        if total_length > max_seq_length:
+            msg = (
+                f"Rollout sequence length {total_length} exceeds max_seq_length="
+                f"{max_seq_length}; prompt and sampled completion are never truncated "
+                "because that would change the rollout context"
+            )
+            raise ValueError(msg)
+        if not prompt_ids:
+            msg = "Math-RL update requires at least one prompt token"
+            raise ValueError(msg)
+        sequences.append((prompt_ids, completion_ids))
+    return sequences
 
 
 def write_rollout_samples_digest(

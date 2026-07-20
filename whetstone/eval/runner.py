@@ -36,8 +36,8 @@ from whetstone.eval.samples import write_samples_markdown
 from whetstone.models.generation import generate_completions, generate_mock_completions
 from whetstone.models.loader import load_causal_lm
 from whetstone.prompts.templates import TEMPLATE_REGISTRY, render_prompts
-from whetstone.utils.hash import git_commit
-from whetstone.utils.logging import configure_logging, get_logger
+from whetstone.utils.hash import git_source_state, stable_hash
+from whetstone.utils.logging import attach_run_dir_logging, configure_logging, get_logger
 from whetstone.utils.memory import peak_gpu_memory_mb
 from whetstone.verify import VERIFIER_REGISTRY, build_verifier
 
@@ -69,7 +69,7 @@ def run_evaluation(
     """
     config_paths: list[Path] = (
         [Path(config_path)]
-        if isinstance(config_path, (str, Path))
+        if isinstance(config_path, str | Path)
         else [Path(path) for path in config_path]
     )
     data = merge_config_files(config_paths)
@@ -97,7 +97,9 @@ def run_evaluation(
 
         if state.is_main:
             save_yaml(config, run_dir / "run_config.yaml")
-            write_json(run_dir / "env.json", collect_env(state))
+            env = collect_env(state)
+            env["config_sha256"] = stable_hash(config.model_dump(mode="json"))
+            write_json(run_dir / "env.json", env)
             write_status(run_dir, status="running", stage=stage)
         barrier(state)
 
@@ -282,24 +284,32 @@ def create_run_dir(config: EvalConfig, config_path: Path, state: DistributedStat
     else:
         value = None
     # Rank 0 owns the timestamped path, then broadcasts it to avoid divergent run dirs.
-    return Path(broadcast_object(value, state))
+    run_dir = Path(broadcast_object(value, state))
+    # Mirror all subsequent logging into the run directory (run.log on rank 0,
+    # run_rank{N}.log elsewhere) so queued/detached runs keep their log.
+    attach_run_dir_logging(run_dir, rank=state.rank)
+    return run_dir
 
 
 def collect_env(state: DistributedState) -> dict[str, Any]:
     """Gather reproducibility metadata (versions, git commit, host, ranks) for ``env.json``."""
     packages = {}
-    for package in ("torch", "transformers", "datasets", "numpy", "pyyaml"):
+    for package in ("torch", "transformers", "datasets", "numpy", "pyyaml", "math-verify"):
         try:
             packages[package] = metadata.version(package)
         except metadata.PackageNotFoundError:
             packages[package] = None
     root = resolve_project_path(".")
+    source_state = git_source_state(root)
     return {
         "python": sys.version,
         "platform": platform.platform(),
         "hostname": socket.gethostname(),
         "packages": packages,
-        "git_commit": git_commit(root),
+        # Keep the legacy top-level field while adding enough source identity
+        # to distinguish dirty runtime code from untracked notes/results.
+        "git_commit": source_state["git_commit"],
+        "source_state": source_state,
         "distributed": {
             "enabled": state.enabled,
             "rank": state.rank,

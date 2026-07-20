@@ -2,9 +2,10 @@
 # from an SFT checkpoint. Verifies rollout -> verifier reward -> advantage ->
 # update -> artifacts; accuracy improvement is NOT a goal of this run.
 #
-# Set model.policy_name_or_path to a real SFT checkpoint first, e.g. the
-# checkpoints/last directory written by:
-#   python scripts/train_sft.py --config configs/train/sft_math_smoke.yaml
+# model.policy_name_or_path points at the current SFT checkpoint; swap it per
+# run without editing this file via:
+#   python scripts/train_math_rl.py --config configs/train/math_rl_smoke.yaml \
+#     --policy runs/<sft_run>/checkpoints/last
 run:
   name: math_rl_smoke
   seed: 42
@@ -23,8 +24,9 @@ prompt:
   template_id: math_cot_boxed_v1
 
 model:
-  policy_name_or_path: runs/CHANGE_ME_sft_math_smoke/checkpoints/last
-  # reference defaults to the policy path when kl_beta > 0
+  # Required at launch through --policy. Keeping a dated local checkpoint here
+  # would make the committed smoke config silently target another machine's run.
+  # reference_name_or_path is reserved for future detached KL reward shaping.
   dtype: bf16
   device: cuda
 
@@ -36,10 +38,12 @@ rl:
   learning_rate: 1.0e-6
   weight_decay: 0.0
   max_grad_norm: 1.0
-  kl_beta: 0.01
+  # Phase 1 rejects nonzero KL: the old differentiable sampled-log-ratio path
+  # was mathematically invalid. Correct KL will enter through reward shaping.
+  kl_beta: 0.0
   max_seq_length: 1024
   # 16 rollout sequences per step; run the update forward 4 at a time so the
-  # full-vocab logits stay ~1 GiB per chunk instead of ~4 GiB twice (ref+policy).
+  # full-vocab policy logits stay ~1 GiB per chunk instead of ~4 GiB at once.
   update_micro_batch_size: 4
   gradient_checkpointing: true
   log_every: 1
@@ -52,15 +56,19 @@ advantage:
   epsilon: 1.0e-6
 
 generation:
+  # Prompt batches for rollout generation; each prompt still yields G samples.
+  batch_size: 2
   do_sample: true
   temperature: 0.7
   top_p: 0.95
   max_new_tokens: 512
 
 verifier:
-  name: math_answer
+  name: math_verify
 
 eval:
+  # At eval_every, training only stages a standalone eval_config.yaml. Launch
+  # it after training (or on another GPU); no evaluator is loaded in-process.
   dataset:
     name: gsm8k
     split: test
@@ -68,7 +76,7 @@ eval:
   prompt:
     template_id: math_cot_boxed_v1
   verifier:
-    name: math_answer
+    name: math_verify
   generation:
     max_new_tokens: 512
     do_sample: false

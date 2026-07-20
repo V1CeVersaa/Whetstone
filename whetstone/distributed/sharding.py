@@ -1,13 +1,11 @@
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any
 
 from whetstone.utils.jsonl import read_jsonl, write_jsonl
 
-T = TypeVar("T")
 
-
-def shard_sequence(items: Sequence[T], *, rank: int, world_size: int) -> list[T]:
+def shard_sequence[T](items: Sequence[T], *, rank: int, world_size: int) -> list[T]:
     """Return this rank's strided slice of ``items``.
 
     Strided (``items[rank::world_size]``) sharding partitions the sequence with

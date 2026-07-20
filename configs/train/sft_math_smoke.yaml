@@ -19,6 +19,14 @@ model:
   dtype: bf16
   device: cuda
 
+preprocessing:
+  # Targets are verified with math_verify (same verifier as reward/eval);
+  # unboxed targets get a canonical boxed gold ending appended.
+  ensure_verifiable_target: true
+  # Decode round-trip mismatches alter the supervised sequence, so fail before
+  # loading model weights instead of treating them as an informational metric.
+  max_decode_mismatch_rate: 0.0
+
 training:
   max_steps: 250
   batch_size: 2
@@ -28,15 +36,18 @@ training:
   max_grad_norm: 1.0
   lr_scheduler: linear_warmup
   warmup_steps: 20
-  # OpenR1 reference solutions are long R1 traces; 1024 truncates most of them
-  # but halves memory, which is the right trade for a smoke run on one 24GB GPU.
+  # OpenR1 reference solutions are long R1 traces. The default drop policy
+  # skips and counts pairs above 1024 instead of supervising truncated CoT.
   max_seq_length: 1024
+  overlong_policy: drop
   gradient_checkpointing: true
   log_every: 10
   save_every: 125
   eval_every: 125
 
 eval:
+  # At eval_every, training only stages a standalone eval_config.yaml. Launch
+  # it after training (or on another GPU); no evaluator is loaded in-process.
   dataset:
     name: gsm8k
     split: test
@@ -44,7 +55,7 @@ eval:
   prompt:
     template_id: math_cot_boxed_v1
   verifier:
-    name: math_answer
+    name: math_verify
   generation:
     max_new_tokens: 512
     do_sample: false

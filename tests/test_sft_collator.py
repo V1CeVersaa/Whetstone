@@ -1,10 +1,14 @@
+import pytest
 import torch
 
 from whetstone.train.collators import (
     LABEL_IGNORE_INDEX,
+    audit_sft_tokenization,
     collate_sft_examples,
     collate_token_sequences,
     encode_prompt_response,
+    filter_overlong_sft_examples,
+    validate_sft_tokenization_audit,
 )
 from whetstone.train.losses import sft_loss_from_logits
 from whetstone.train.types import SFTExample
@@ -79,6 +83,71 @@ def test_truncation_keeps_response_and_at_least_one_prompt_token(word_tokenizer)
     assert prompt_ids == word_tokenizer(prompt)["input_ids"][-1:]
 
 
+def test_truncated_response_still_ends_with_eos(word_tokenizer) -> None:
+    prompt = "question text"
+    response = " ".join(f"r{i}" for i in range(20))  # 20 tokens + EOS > budget
+    prompt_ids, response_ids = encode_prompt_response(
+        word_tokenizer, prompt, response, max_seq_length=10
+    )
+    assert len(prompt_ids) + len(response_ids) <= 10
+    # Truncation must never drop the stop supervision.
+    assert response_ids[-1] == word_tokenizer.eos_token_id
+
+
+def test_filter_overlong_sft_examples(word_tokenizer) -> None:
+    short = sft_example("short prompt", "short response")
+    long = sft_example("short prompt", " ".join(f"r{i}" for i in range(50)))
+    kept, num_dropped = filter_overlong_sft_examples(
+        [short, long], word_tokenizer, max_seq_length=16
+    )
+    assert kept == [short]
+    assert num_dropped == 1
+
+    # Everything fits when the budget is large enough.
+    kept, num_dropped = filter_overlong_sft_examples(
+        [short, long], word_tokenizer, max_seq_length=512
+    )
+    assert len(kept) == 2
+    assert num_dropped == 0
+
+
+def test_tokenization_audit_reports_boundary_and_decode_mismatches(word_tokenizer) -> None:
+    stable = sft_example("alpha beta ", "gamma delta")
+    unstable = sft_example("alpha beta", "gamma delta")
+
+    audit = audit_sft_tokenization(
+        [stable, unstable],
+        word_tokenizer,
+        max_seq_length=32,
+    )
+
+    assert audit["num_examples"] == 2
+    assert audit["num_separate_joint_mismatches"] == 1
+    assert audit["num_decode_mismatches"] == 1
+    assert audit["separate_joint_mismatch_rate"] == 0.5
+    assert audit["prompt_tokens"]["max"] == 2
+    assert audit["response_tokens_including_eos"]["min"] == 3
+
+
+def test_tokenization_audit_gate_rejects_decode_mismatch(word_tokenizer) -> None:
+    audit = audit_sft_tokenization(
+        [sft_example("alpha beta", "gamma delta")],
+        word_tokenizer,
+        max_seq_length=32,
+    )
+    with pytest.raises(ValueError, match="decode_mismatch_rate"):
+        validate_sft_tokenization_audit(audit)
+
+
+def test_tokenization_audit_gate_allows_explicit_threshold(word_tokenizer) -> None:
+    audit = audit_sft_tokenization(
+        [sft_example("alpha beta", "gamma delta")],
+        word_tokenizer,
+        max_seq_length=32,
+    )
+    validate_sft_tokenization_audit(audit, max_decode_mismatch_rate=1.0)
+
+
 def test_sft_loss_ignores_prompt_tokens() -> None:
     torch.manual_seed(0)
     vocab = 11
@@ -103,10 +172,6 @@ def test_sft_loss_ignores_prompt_tokens() -> None:
     # Changing prompt token ids does not change the loss for fixed logits.
     altered_ids = batch["input_ids"].clone()
     altered_ids[0, 1] = 9  # a masked prompt target position
-    unchanged = sft_loss_from_logits(
-        logits.detach(), altered_ids, batch["response_mask"]
-    )
-    original = sft_loss_from_logits(
-        logits.detach(), batch["input_ids"], batch["response_mask"]
-    )
+    unchanged = sft_loss_from_logits(logits.detach(), altered_ids, batch["response_mask"])
+    original = sft_loss_from_logits(logits.detach(), batch["input_ids"], batch["response_mask"])
     assert torch.allclose(unchanged, original)

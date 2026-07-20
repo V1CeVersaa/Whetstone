@@ -2,12 +2,12 @@ from collections import Counter
 from statistics import fmean, median
 from typing import Any
 
+# Extraction failures under math_verify: nothing judgeable was produced.
 FAILURE_REASONS = {
     "empty_completion",
     "too_long",
     "no_answer_found",
-    "parse_error",
-    "unsupported_expression",
+    "verifier_error",
 }
 
 
@@ -60,6 +60,10 @@ def compute_math_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "accuracy": count_passed(rows) / num_examples,
         "parse_success_rate": len(parsed) / num_examples,
+        "boxed_completion_rate": sum(
+            1 for row in rows if "\\boxed{" in str(row.get("completion") or "")
+        )
+        / num_examples,
         "no_answer_rate": reasons["no_answer_found"] / num_examples,
         "wrong_answer_rate": reasons["wrong_answer"] / num_examples,
         "conflicting_answer_rate": count_diagnostic_flag(rows, "had_conflict") / num_examples,

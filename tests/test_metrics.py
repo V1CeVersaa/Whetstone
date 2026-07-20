@@ -8,6 +8,7 @@ def test_math_metrics_match_fixture() -> None:
             "passed": True,
             "reward": 1.0,
             "reason": "correct",
+            "completion": "The final answer is \\boxed{1}",
             "num_prompt_tokens": 1,
             "num_completion_tokens": 2,
         },
@@ -16,6 +17,7 @@ def test_math_metrics_match_fixture() -> None:
             "passed": True,
             "reward": 1.0,
             "reason": "correct",
+            "completion": "The final answer is \\boxed{2}",
             "num_prompt_tokens": 1,
             "num_completion_tokens": 2,
         },
@@ -24,6 +26,7 @@ def test_math_metrics_match_fixture() -> None:
             "passed": False,
             "reward": 0.0,
             "reason": "wrong_answer",
+            "completion": "The answer is 3",
             "num_prompt_tokens": 1,
             "num_completion_tokens": 4,
             "diagnostics": {"had_conflict": True},
@@ -33,6 +36,7 @@ def test_math_metrics_match_fixture() -> None:
             "passed": False,
             "reward": 0.0,
             "reason": "no_answer_found",
+            "completion": "",
             "num_prompt_tokens": 1,
             "num_completion_tokens": 4,
         },
@@ -40,6 +44,7 @@ def test_math_metrics_match_fixture() -> None:
     metrics = compute_metrics(rows)
     assert metrics["accuracy"] == 0.5
     assert metrics["parse_success_rate"] == 0.75
+    assert metrics["boxed_completion_rate"] == 0.5
     assert metrics["no_answer_rate"] == 0.25
     assert metrics["conflicting_answer_rate"] == 0.25
     assert metrics["median_completion_tokens"] == 3.0

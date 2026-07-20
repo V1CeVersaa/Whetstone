@@ -1,4 +1,9 @@
-from whetstone.data.base import DATASET_REGISTRY, DatasetAdapter, get_dataset_adapter
+from whetstone.data.base import (
+    DATASET_REGISTRY,
+    DatasetAdapter,
+    get_dataset_adapter,
+    get_dataset_domain,
+)
 from whetstone.data.gsm8k import GSM8KAdapter
 from whetstone.data.openr1_math import OpenR1MathAdapter
 from whetstone.data.taco_cobalt import TacoCobaltAdapter
@@ -25,4 +30,5 @@ __all__ = [
     "OpenR1MathAdapter",
     "TacoCobaltAdapter",
     "get_dataset_adapter",
+    "get_dataset_domain",
 ]

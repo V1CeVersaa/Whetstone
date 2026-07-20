@@ -39,9 +39,7 @@ def save_checkpoint(
     if hasattr(tokenizer, "save_pretrained"):
         tokenizer.save_pretrained(target)
     state_path = target / TRAINING_STATE_FILENAME
-    state_path.write_text(
-        json.dumps(training_state, indent=4, ensure_ascii=True), encoding="utf-8"
-    )
+    state_path.write_text(json.dumps(training_state, indent=4, ensure_ascii=True), encoding="utf-8")
     logger.info(f"Saved checkpoint to {target}")
     return target
 

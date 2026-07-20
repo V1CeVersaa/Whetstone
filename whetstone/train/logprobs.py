@@ -32,9 +32,7 @@ def token_logprobs_from_logits(
     targets = input_ids[:, 1:].reshape(-1)
     negative_logprobs = F.cross_entropy(shifted_logits, targets, reduction="none")
     gathered = -negative_logprobs.reshape(input_ids.shape[0], -1).float()
-    first = torch.zeros(
-        (input_ids.shape[0], 1), dtype=gathered.dtype, device=gathered.device
-    )
+    first = torch.zeros((input_ids.shape[0], 1), dtype=gathered.dtype, device=gathered.device)
     return torch.cat([first, gathered], dim=1)
 
 

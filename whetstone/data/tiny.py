@@ -53,6 +53,7 @@ class TinyMathAdapter:
     """Built-in math fixture dataset for fully offline artifact smoke tests."""
 
     name = "tiny_math"
+    domain = "math"
 
     def load(self, split: str, limit: int | None = None) -> list[WhetstoneExample]:
         rows = TINY_MATH_ROWS[:limit] if limit is not None else TINY_MATH_ROWS
@@ -75,6 +76,7 @@ class TinyCodeAdapter:
     """Built-in code fixture dataset for fully offline artifact smoke tests."""
 
     name = "tiny_code"
+    domain = "code"
 
     def load(self, split: str, limit: int | None = None) -> list[WhetstoneExample]:
         rows = TINY_CODE_ROWS[:limit] if limit is not None else TINY_CODE_ROWS

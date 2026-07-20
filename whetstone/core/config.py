@@ -33,7 +33,7 @@ class DatasetConfig(BaseModel):
 
     name: str
     split: str = "train"
-    limit: int | None = None
+    limit: int | None = Field(default=None, ge=1)
     streaming: bool = False
 
 
@@ -86,21 +86,36 @@ class GenerationConfig(BaseModel):
         batch_size: Prompts per ``model.generate`` call; ``None`` runs the
             whole prompt list at once. Bounds KV-cache memory -- set this for
             evals over more than a few dozen prompts. Stripped before the
-            block is forwarded to ``model.generate``.
+            block is forwarded to ``model.generate``. NOTE: with
+            ``do_sample=true``, runs that differ only in ``batch_size`` are
+            NOT reproductions of each other (each chunk consumes the RNG
+            stream independently); keep it fixed when comparing sampled runs.
+            Greedy decoding is unaffected.
         max_new_tokens: Max tokens to generate per prompt.
         do_sample: Sample (``True``) vs greedy decoding (``False``).
-        temperature: Sampling temperature (``>= 0``).
-        top_p: Nucleus-sampling probability mass (``0..1``).
+        temperature: Sampling temperature. Must be positive when sampling.
+        top_p: Nucleus-sampling probability mass (``0 < top_p <= 1``).
+        num_return_sequences: Foundation evaluation emits exactly one
+            prediction row per example. Math-RL derives grouped returns from
+            ``rl.group_size`` instead of configuring this field directly.
     """
 
     model_config = ConfigDict(extra="allow")
 
     backend: str | None = None
     batch_size: int | None = Field(default=None, ge=1)
-    max_new_tokens: int = 512
+    max_new_tokens: int = Field(default=512, ge=1)
     do_sample: bool = False
     temperature: float = Field(default=0.0, ge=0.0)
-    top_p: float = Field(default=1.0, ge=0.0, le=1.0)
+    top_p: float = Field(default=1.0, gt=0.0, le=1.0)
+    num_return_sequences: int = Field(default=1, ge=1, le=1)
+
+    @model_validator(mode="after")
+    def _validate_sampling_parameters(self) -> Self:
+        if self.do_sample and self.temperature <= 0.0:
+            msg = "generation.temperature must be > 0 when do_sample=true"
+            raise ValueError(msg)
+        return self
 
 
 class VerifierConfig(BaseModel):
@@ -110,7 +125,7 @@ class VerifierConfig(BaseModel):
 
     Attributes:
         name: Which verifier to use.
-        max_chars: [math_answer] Max completion length before reason ``too_long``.
+        max_chars: [math_verify] Max completion length before reason ``too_long``.
         tests: [code_exec] Which test group to grade against, e.g. ``"public"``.
         timeout_seconds: [code_exec] Per-test wall-clock limit.
         max_output_bytes: [code_exec] Cap on captured stdout/stderr.
@@ -120,15 +135,15 @@ class VerifierConfig(BaseModel):
     model_config = _STRICT
 
     name: str
-    max_chars: int = 20000  # math_answer
+    max_chars: int = Field(default=20000, ge=1)  # math_verify
     tests: str = "public"  # code_exec
-    timeout_seconds: float = 3.0
-    max_output_bytes: int = 20000
-    sandbox_backend: str = "subprocess"
+    timeout_seconds: float = Field(default=3.0, gt=0.0)
+    max_output_bytes: int = Field(default=20000, ge=1)
+    sandbox_backend: Literal["subprocess"] = "subprocess"
 
     @model_validator(mode="after")
     def _check_known_verifier(self) -> Self:
-        from whetstone.verify import VERIFIER_REGISTRY  # noqa: PLC0415
+        from whetstone.verify import VERIFIER_REGISTRY
 
         if self.name not in VERIFIER_REGISTRY.names():
             known = ", ".join(VERIFIER_REGISTRY.names()) or "<none>"
@@ -152,8 +167,8 @@ class RuntimeConfig(BaseModel):
 
     distributed: bool = False
     device: str | None = None
-    log_every: int = 1
-    nproc_per_node: int | None = None
+    log_every: int = Field(default=1, ge=1)
+    nproc_per_node: int | None = Field(default=None, ge=1)
 
 
 class EvalConfig(BaseModel):
@@ -203,10 +218,76 @@ class EvalConfig(BaseModel):
         return self
 
 
-def load_config[T: BaseModel](paths: str | Path | Sequence[str | Path], schema: type[T]) -> T:
-    paths = [paths] if isinstance(paths, (str, Path)) else list[str | Path](paths)
+def load_config[T: BaseModel](
+    paths: str | Path | Sequence[str | Path],
+    schema: type[T],
+    *,
+    overrides: Mapping[str, Any] | None = None,
+) -> T:
+    """Merge config file(s), apply optional overrides, and validate.
+
+    ``overrides`` goes through the same :func:`deep_merge` as the files and is
+    applied last, so CLI flags beat file values and the validated config (the
+    one saved into the run directory) reflects exactly what ran. Unknown keys
+    are rejected by the strict schemas at validation time -- except inside
+    ``generation``, which intentionally forwards extra keys to ``model.generate``.
+    """
+    paths = [paths] if isinstance(paths, str | Path) else list[str | Path](paths)
     data = merge_config_files(paths)
+    if overrides:
+        data = deep_merge(data, overrides)
     return schema.model_validate(data)
+
+
+def put_dotted_override(overrides: dict[str, Any], dotted_key: str, value: Any) -> None:
+    """Set ``overrides['a']['b'] = value`` for the dotted key ``"a.b"``, strictly.
+
+    Rejects empty path segments and shape conflicts between overrides (a key
+    used both as a scalar and as a section). Scalar-over-scalar overwrites are
+    allowed; the last write wins, matching file deep-merge semantics.
+    """
+    keys = dotted_key.split(".")
+    if not all(key.strip() for key in keys):
+        msg = f"Invalid override key {dotted_key!r}: empty path segment"
+        raise ValueError(msg)
+    node = overrides
+    for depth, key in enumerate(keys[:-1]):
+        child = node.setdefault(key, {})
+        if not isinstance(child, dict):
+            conflict = ".".join(keys[: depth + 1])
+            msg = f"Override {dotted_key!r} conflicts with scalar override {conflict!r}"
+            raise ValueError(msg)
+        node = child
+    leaf = keys[-1]
+    if isinstance(node.get(leaf), dict) and not isinstance(value, Mapping):
+        msg = f"Override {dotted_key!r} would replace section {leaf!r} with a scalar"
+        raise ValueError(msg)
+    node[leaf] = value
+
+
+def parse_set_overrides(
+    items: Sequence[str], *, into: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """Parse repeated ``--set SECTION.KEY=VALUE`` items into a nested dict.
+
+    Values are parsed as YAML (ints, floats, bools, ``null``, quoted strings).
+    Pass ``into`` to layer ``--set`` items on top of dedicated-flag overrides;
+    later items win over earlier ones and over dedicated flags.
+    """
+    overrides: dict[str, Any] = {} if into is None else into
+    for item in items:
+        dotted_key, separator, raw_value = item.partition("=")
+        dotted_key = dotted_key.strip()
+        if not separator or not dotted_key:
+            msg = f"--set expects SECTION.KEY=VALUE, got {item!r}"
+            raise ValueError(msg)
+        try:
+            value = yaml.safe_load(raw_value)
+        except yaml.YAMLError as exc:
+            msg = f"--set value for {dotted_key!r} is not valid YAML: {raw_value!r}"
+            raise ValueError(msg) from exc
+        put_dotted_override(overrides, dotted_key, value)
+    return overrides
 
 
 def load_eval_config(paths: str | Path | Sequence[str | Path]) -> EvalConfig:

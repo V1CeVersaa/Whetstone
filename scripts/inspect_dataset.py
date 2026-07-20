@@ -47,9 +47,7 @@ def print_example(example: WhetstoneExample, preview_chars: int) -> None:
     print(f"source: {example.source}")
     print(f"split: {example.split}")
     print(f"prompt_raw_preview: {preview_text(example.prompt_raw, preview_chars)}")
-    print(
-        f"reference_solution_preview: {preview_text(example.reference_solution, preview_chars)}"
-    )
+    print(f"reference_solution_preview: {preview_text(example.reference_solution, preview_chars)}")
     print(f"final_answer: {example.final_answer}")
     if example.tests is not None:
         test_counts = {

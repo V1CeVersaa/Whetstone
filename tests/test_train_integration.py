@@ -6,11 +6,13 @@ loss, optimizer plumbing) is broken. The RL test drives the full rollout ->
 verify -> advantage -> update -> artifact path with injected completions.
 """
 
-import copy
 import json
 
+import pytest
 import torch
 from transformers import GPT2LMHeadModel
+
+pytest.importorskip("math_verify")
 
 from whetstone.core.config import VerifierConfig
 from whetstone.data.tiny import TinyMathAdapter
@@ -79,7 +81,8 @@ def test_math_rl_tiny_loop_writes_rollout_artifacts(
     examples = TinyMathAdapter().load(split="train")
     rendered = render_prompts(examples, "math_cot_boxed_v1")
     gold_by_prompt = {
-        prompt.text: example.final_answer for prompt, example in zip(rendered, examples, strict=True)
+        prompt.text: example.final_answer
+        for prompt, example in zip(rendered, examples, strict=True)
     }
 
     def generate_fn(prompt_texts, group_size):
@@ -114,11 +117,10 @@ def test_math_rl_tiny_loop_writes_rollout_artifacts(
     run_dir.mkdir()
     final_metrics = train_math_rl_loop(
         policy=tiny_causal_lm,
-        reference=None,
         tokenizer=word_tokenizer,
         examples=examples,
         rendered_prompts=rendered,
-        verifier=build_verifier(VerifierConfig(name="math_answer")),
+        verifier=build_verifier(VerifierConfig(name="math_verify")),
         rl=rl,
         advantage=AdvantageConfig(),
         generation_config={"max_new_tokens": 8, "do_sample": True},
@@ -153,62 +155,11 @@ def test_math_rl_tiny_loop_writes_rollout_artifacts(
     first = metrics_rows[0]
     assert first["mean_reward"] == 0.5
     assert first["nonzero_group_variance_rate"] == 1.0
-    assert {"rl_loss", "policy_loss", "kl", "rollout_time", "update_time"} <= set(first)
+    assert first["boxed_completion_rate"] == 1.0
+    assert {"rl_loss", "policy_loss", "rollout_time", "update_time"} <= set(first)
     # Group-mean advantages for [1, 0] rewards.
     step_one = [row["advantage"] for row in rollout_rows if row["step"] == 1]
     assert sorted(step_one) == sorted([0.5, -0.5] * (len(step_one) // 2))
 
     assert (run_dir / "checkpoints" / "last" / "training_state.json").exists()
     assert (run_dir / "samples.md").exists()
-
-
-def test_math_rl_kl_path_runs_with_frozen_reference(
-    tmp_path, tiny_causal_lm, word_tokenizer
-) -> None:
-    examples = TinyMathAdapter().load(split="train")
-    rendered = render_prompts(examples, "math_cot_boxed_v1")
-
-    def generate_fn(prompt_texts, group_size):
-        return [["\\boxed{1}", "\\boxed{2}"][:group_size] for _ in prompt_texts]
-
-    from whetstone.algorithms.math_rl import train_math_rl_loop
-
-    reference = copy.deepcopy(tiny_causal_lm)
-    reference.requires_grad_(False)
-
-    rl = RLParams(
-        group_size=2,
-        prompts_per_step=1,
-        max_steps=2,
-        learning_rate=1.0e-3,
-        kl_beta=0.1,
-        log_every=1,
-        save_every=None,
-        eval_every=None,
-        max_seq_length=128,
-        # Exercise the chunked update path: per-chunk reweighting must still
-        # reproduce full-batch normalization (kl stays exactly 0 at step 1).
-        update_micro_batch_size=1,
-    )
-    run_dir = tmp_path / "rl_kl_run"
-    run_dir.mkdir()
-    train_math_rl_loop(
-        policy=tiny_causal_lm,
-        reference=reference,
-        tokenizer=word_tokenizer,
-        examples=examples,
-        rendered_prompts=rendered,
-        verifier=build_verifier(VerifierConfig(name="math_answer")),
-        rl=rl,
-        advantage=AdvantageConfig(),
-        generation_config={"max_new_tokens": 8, "do_sample": True},
-        run_dir=run_dir,
-        device="cpu",
-        seed=42,
-        generate_fn=generate_fn,
-    )
-    rows = load_metrics_rows(run_dir)
-    assert all(isinstance(row["kl"], float) for row in rows)
-    # Step 1 runs before any update, so policy == reference and the sampled KL
-    # estimate is exactly zero.
-    assert rows[0]["kl"] == 0.0

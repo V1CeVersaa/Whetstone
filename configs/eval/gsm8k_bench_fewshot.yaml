@@ -37,8 +37,10 @@ model:
   device: cuda
 
 generation:
+  # See gsm8k_bench.yaml: max_new_tokens (not batch_size) is the straggler
+  # lever. Legit few-shot answers average ~100 tokens; 512 is a 5x margin.
   batch_size: 32
-  max_new_tokens: 1024
+  max_new_tokens: 512
   do_sample: false
   temperature: 0.0
   top_p: 1.0
@@ -46,7 +48,7 @@ generation:
   stop_strings: ["\nQuestion:"]
 
 verifier:
-  name: math_answer
+  name: math_verify
 
 runtime:
   distributed: false

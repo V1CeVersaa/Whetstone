@@ -23,8 +23,7 @@ def compute_group_advantages(
     further divided by the in-group population std plus ``epsilon``.
 
     Raises:
-        ValueError: If ``group_size < 1`` or ``len(rewards)`` is not a
-            multiple of ``group_size``.
+        ValueError: If ``group_size < 1`` or ``len(rewards)`` is not a multiple of ``group_size``.
     """
     if group_size < 1:
         msg = f"group_size must be >= 1, got {group_size}"
@@ -39,7 +38,8 @@ def compute_group_advantages(
         baseline = fmean(group)
         centered = [reward - baseline for reward in group]
         if normalize:
-            scale = (pstdev(group) if len(group) > 1 else 0.0) + epsilon
-            centered = [value / scale for value in centered]
+            std = pstdev(group) if len(group) > 1 else 0.0
+            if std > 0.0:
+                centered = [value / (std + epsilon) for value in centered]
         advantages.extend(centered)
     return advantages

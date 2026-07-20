@@ -3,6 +3,8 @@ import json
 import pytest
 import yaml
 
+pytest.importorskip("math_verify")
+
 from whetstone.eval.runner import run_evaluation
 from whetstone.utils.jsonl import read_jsonl_list
 
@@ -18,7 +20,7 @@ def test_tiny_math_mock_runner_writes_complete_artifacts(tmp_path) -> None:
                 "prompt": {"template_id": "math_cot_boxed_v1"},
                 "model": {"backend": "mock", "mock_mode": "reference"},
                 "generation": {"backend": "mock"},
-                "verifier": {"name": "math_answer"},
+                "verifier": {"name": "math_verify"},
                 "runtime": {"distributed": False},
             }
         ),
@@ -45,12 +47,16 @@ def test_tiny_math_mock_runner_writes_complete_artifacts(tmp_path) -> None:
     assert rows[0]["prompt"]
     assert rows[0]["completion"]
     assert rows[0]["reason"] == "correct"
-    assert rows[0]["diagnostics"]["verifier"]["name"] == "math_answer"
+    assert rows[0]["diagnostics"]["verifier"]["name"] == "math_verify"
 
     metrics = json.loads((run_dir / "metrics.json").read_text(encoding="utf-8"))
     assert metrics["num_examples"] == 2
     assert metrics["accuracy"] == 1.0
     assert metrics["world_size"] == 1
+
+    env = json.loads((run_dir / "env.json").read_text(encoding="utf-8"))
+    assert len(env["config_sha256"]) == 64
+    assert env["source_state"]["source_tree_sha256"]
 
     status = json.loads((run_dir / "status.json").read_text(encoding="utf-8"))
     assert status["status"] == "completed"

@@ -1,5 +1,5 @@
 from collections.abc import Callable, Iterable, Sequence
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from datasets import load_dataset
 
@@ -12,6 +12,7 @@ logger = get_logger(__name__)
 
 class DatasetAdapter(Protocol):
     name: str
+    domain: Literal["math", "code"]
 
     def load(self, split: str, limit: int | None = None) -> list[WhetstoneExample]: ...
 
@@ -58,9 +59,7 @@ def load_hf_rows(
         take_limit = None
 
     # Hub loads can involve slow downloads; say what is being fetched and how.
-    logger.info(
-        f"Loading dataset {dataset_name} split={split} limit={limit} streaming={streaming}"
-    )
+    logger.info(f"Loading dataset {dataset_name} split={split} limit={limit} streaming={streaming}")
     dataset = load_dataset(
         dataset_name,
         name=name,
@@ -85,3 +84,13 @@ def get_dataset_adapter(name: str, **kwargs: Any) -> DatasetAdapter:
     """Resolve a dataset name to its adapter instance."""
     factory = DATASET_REGISTRY.get(name.strip().lower())
     return factory(**kwargs)
+
+
+def get_dataset_domain(name: str) -> Literal["math", "code"]:
+    """Return the declared domain of a registered dataset without loading rows."""
+    factory = DATASET_REGISTRY.get(name.strip().lower())
+    domain = getattr(factory, "domain", None)
+    if domain not in {"math", "code"}:
+        msg = f"Dataset adapter {name!r} does not declare a supported domain"
+        raise ValueError(msg)
+    return domain

@@ -8,7 +8,8 @@ dependencies = [
     "accelerate>=1.13.0",
     "datasets>=5.0.0",
     "einops>=0.8.2",
-    "jax[cuda12]>=0.4.30",
+    # "jax[cuda12]>=0.4.30",
+    "math-verify>=0.5.2",
     "numpy>=2.4.6",
     "pydantic>=2.0",
     "pyyaml>=6.0.3",
@@ -65,7 +66,16 @@ select = [
     "PL",
     "NPY",
 ]
-ignore = ["E501", "PLR0913", "PLR2004", "N812", "B008", "SIM108", "PLR0915"]
+ignore = [
+    "E501",
+    "PLR0913",
+    "PLR2004",
+    "N812",
+    "B008",
+    "SIM108",
+    "PLR0915",
+    "PLC0415",
+]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**/*.py" = ["PLR2004", "S101", "N802"]
